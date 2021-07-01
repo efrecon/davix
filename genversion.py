@@ -163,7 +163,7 @@ def sh(cmd):
     if retcode:
         raise Exception("Command {0} exited with code {1}".format(cmd, retcode))
 
-    return output
+    return output.decode("utf-8")
 
 def getFile(filename):
     try:
@@ -198,19 +198,7 @@ def declare_incompatible_options(parser, option, group):
         if item in sys.argv:
             parser.error("argument {0} is incompatible with argument {1}".format(option, item))
 
-def main():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-                                     description="Configure files that contain version numbers.\n")
-    parser.add_argument('--template', type=str, help="The template input file.")
-    parser.add_argument('--out', type=str, help="The file to output - if not specified, stdout will be used instead.")
-    parser.add_argument('--template-string', type=str, help="The template string.")
-    args = parser.parse_args()
-
-    if (not args.template and not args.template_string):
-        parser.error("no input specified; use either --template or --template-string")
-
-    declare_incompatible_options(parser, "--template-string", ["--template"])
-
+def ensureRunningInGitRepo(args):
     try:
         root_dir = sh("git rev-parse --show-toplevel").strip()
         os.chdir(root_dir)
@@ -219,20 +207,36 @@ def main():
         print("Cannot regenerate {0} from git".format(args.out))
         sys.exit(0)
 
-    commit_hash = sh("git rev-parse HEAD").strip()
+    # Ensure the release tarball isn't being built from inside a different git repository
+    path_to_genversion = os.path.abspath(os.path.dirname(__file__))
+    if path_to_genversion != root_dir:
+        print("Cannot regenerate {0} from git".format(args.out))
+        sys.exit(0)
 
-    gitDescribe = GitDescribe(sh("git describe --dirty").strip())
+def main():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                     description="Configure files that contain version numbers.\n")
+    parser.add_argument('--template', type=str, help="The template input file.")
+    parser.add_argument('--out', type=str, help="The file to output - if not specified, stdout will be used instead.")
+    parser.add_argument('--template-string', type=str, help="The template string.")
+    parser.add_argument('--custom-version', type=str, help="Don't run git - extract version from the given string")
+    args = parser.parse_args()
+
+    if (not args.template and not args.template_string):
+        parser.error("no input specified; use either --template or --template-string")
+
+    declare_incompatible_options(parser, "--template-string", ["--template"])
+
+    if not args.custom_version:
+      ensureRunningInGitRepo(args)
+      gitDescribe = GitDescribe(sh("git describe --dirty").strip())
+    else:
+      gitDescribe = GitDescribe(args.custom_version)
+
     softwareVersion = gitDescribe.getVersion()
 
-    git_commit_date = sh("git log -1 --date=short --pretty=format:%cd").strip().replace("-", "")
-    branch = sh("git rev-parse --symbolic-full-name --abbrev-ref HEAD").strip()
-    latest_tag = sh("git describe --abbrev=0 --tags").strip()
-
     replacements = [
-      ["@GIT_SHA1@", commit_hash],
       ["@GIT_DESCRIBE@", gitDescribe.toString()],
-      ["@GIT_COMMIT_DATE@", git_commit_date],
-      ["@GIT_BRANCH@", branch],
       ["@VERSION_MAJOR@", softwareVersion.major],
       ["@VERSION_MINOR@", softwareVersion.minor],
       ["@VERSION_PATCH@", softwareVersion.patch],

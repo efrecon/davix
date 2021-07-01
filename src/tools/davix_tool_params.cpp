@@ -24,7 +24,7 @@
 #include "davix_tool_util.hpp"
 #include "davix_config_parser.hpp"
 #include <getopt.h>
-#include <string_utils/stringutils.hpp>
+#include <utils/stringutils.hpp>
 #include <utils/davix_logger.hpp>
 
 namespace Davix{
@@ -63,6 +63,10 @@ const std::string scope_params = "Davix::Tools::Params";
 #define ACCEPTED_RETRY         1025
 #define ACCEPTED_RETRY_DELAY   1026
 #define GCLOUD_CRED_PATH       1027
+#define OS_TOKEN               1028
+#define OS_PROJECT_ID          1029
+#define SWIFT_LISTING_MODE     1030
+#define SWIFT_ACCOUNT          1031
 
 // LONG OPTS
 
@@ -95,7 +99,10 @@ const std::string scope_params = "Davix::Tools::Params";
 {"azurekey", required_argument, 0, AZURE_KEY}, \
 {"s3alternate", no_argument, 0, S3_ALTERNATE}, \
 {"gcloud-creds", required_argument, 0, GCLOUD_CRED_PATH}, \
-{"insecure", no_argument, 0,  'k' }
+{"insecure", no_argument, 0,  'k' }, \
+{"ostoken", required_argument, 0, OS_TOKEN}, \
+{"osprojectid", required_argument, 0, OS_PROJECT_ID}, \
+{"swiftaccount", required_argument, 0, SWIFT_ACCOUNT}
 
 #define REQUEST_LONG_OPTIONS \
 {"request",  required_argument, 0,  'X' }, \
@@ -106,7 +113,8 @@ const std::string scope_params = "Davix::Tools::Params";
 {"s3-listing", required_argument, 0,  S3_LISTING_MODE }, \
 {"s3-maxkeys", required_argument, 0,  S3_MAX_KEYS }, \
 {"no-cap", required_argument, 0, DISABLE_LISTING_CAP}, \
-{"long-list", no_argument, 0,  'l' }
+{"long-list", no_argument, 0,  'l' }, \
+{"swift-listing", required_argument, 0, SWIFT_LISTING_MODE}
 
 #define GET_LONG_OPTIONS \
 {"accepted-retry", required_argument, 0, ACCEPTED_RETRY}, \
@@ -138,6 +146,9 @@ OptParams::OptParams() :
     aws_region(),
     aws_token(),
     aws_alternate(false),
+    os_token(),
+    os_project_id(),
+    swift_account(),
     pres_flag(0),
     shell_flag(0),
     has_input_file(false),
@@ -155,6 +166,9 @@ static void option_abort(char** argv){
 
 static void display_version(){
     std::cout << "Version: " << version() << std::endl;
+    std::cout << "Runtime curl version: " << backendRuntimeVersion() << std::endl;
+    std::cout << "Compiled against curl " << backendHeadersVersion() << std::endl;
+
     exit(0);
 }
 
@@ -265,6 +279,14 @@ int parse_davix_options_generic(const std::string &opt_filter,
             case S3_MAX_KEYS:
                 p.params.setS3MaxKey(atoi(optarg));
                 break;
+            case SWIFT_LISTING_MODE:
+                {
+                    if(std::string(optarg).compare("hierarchical")==0)
+                        p.params.setSwiftListingMode(SwiftListingMode::Hierarchical);
+                    else if(std::string(optarg).compare("semi")==0)
+                        p.params.setSwiftListingMode(SwiftListingMode::SemiHierarchical);
+                    break;
+                }
             case CAPATH_OPT:
                 p.params.addCertificateAuthorityPath(optarg);
                 break;
@@ -314,6 +336,18 @@ int parse_davix_options_generic(const std::string &opt_filter,
                 break;
             case GCLOUD_CRED_PATH:
                 p.gcloud_creds_path = SanitiseTildedPath(optarg).c_str();
+                break;
+            case OS_TOKEN:
+                p.os_token = optarg;
+                strncpy(optarg, "", strlen(optarg));
+                break;
+            case OS_PROJECT_ID:
+                p.os_project_id = optarg;
+                strncpy(optarg, "", strlen(optarg));
+                break;
+            case SWIFT_ACCOUNT:
+                p.swift_account = optarg;
+                strncpy(optarg, "", strlen(optarg));
                 break;
             case 'l':
                 p.pres_flag |= LONG_LISTING_FLAG;
@@ -576,6 +610,9 @@ std::string get_common_options(){
             "\t                          A path-based URL contains the bucket name in the path, ie https://s3-someregion.amazonaws.com/mybucket/file\n"
             "\t--azurekey AZURE_KEY:     Azure authentication secret key\n"
             "\t--gcloud-creds PATH:      Path to gcloud json credentials\n"
+            "\t--ostoken TOKEN:          Swift authentication: Openstack token\n"
+            "\t--osprojectid:            Swift authentication: Openstack project ID\n"
+            "\t--swiftaccount:           Alternative Swift authentication: Swift account\n"
             ;
 }
 

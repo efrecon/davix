@@ -43,7 +43,7 @@ public:
 
     Type::UInt64 toTimestamp() const;
 
-    bool isValid();
+    bool isValid() const;
 
 
 
@@ -60,8 +60,13 @@ public:
     Duration(Type::UInt64 seconds);
     ~Duration();
 
+    static Duration milliseconds(Type::UInt64 v);
+
     /// return duration value in seconds
     Type::UInt64 toTimeValue() const;
+
+    /// return duration value in milliseconds
+    Type::UInt64 toMilliseconds() const;
 
 private:
     struct timespec t;

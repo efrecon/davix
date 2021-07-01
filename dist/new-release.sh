@@ -55,9 +55,14 @@ function edit_deb_changelog {
   sed -i "1i $line1\n$line2\n$line3" packaging/debian/changelog
 }
 
+function update_release_cmakefile {
+  ./genversion.py --template version.cmake.in --out release.cmake --custom-version "R_${major}_${minor}_${patch}"
+}
+
 function git_commit {
   echo "Creating commit.."
   git add .
+  git add --force release.cmake
   git commit -e -m "RELEASE: $major.$minor.$patch"
 }
 
@@ -102,6 +107,7 @@ get_author
 edit_rpm_spec
 edit_deb_changelog
 
+update_release_cmakefile
 git_commit
 git_tag
 

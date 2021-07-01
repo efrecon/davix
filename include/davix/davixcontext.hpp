@@ -134,9 +134,18 @@ private:
 };
 
 
-/// version string of the current davix library
+/// runtime version string of the current davix library
 /// @return version of davix
 DAVIX_EXPORT const std::string & version();
+
+/// runtime version string of the current HTTP backend library
+/// @return version of backend library
+DAVIX_EXPORT const std::string backendRuntimeVersion();
+
+/// backend version _at the time of compilation_ which could
+/// be different than runtime one
+/// @return header version of backend library
+DAVIX_EXPORT const std::string backendHeadersVersion();
 
 }
 

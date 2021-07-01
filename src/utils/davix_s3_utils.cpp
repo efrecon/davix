@@ -25,12 +25,12 @@
 #include <ctime>
 #include <cstring>
 #include <davix_internal.hpp>
-#include <string_utils/stringutils.hpp>
-#include <datetime/datetime_utils.hpp>
+#include <utils/stringutils.hpp>
+#include "libs/datetime/datetime_utils.hpp"
 #include <utils/davix_logger_internal.hpp>
 #include <utils/davix_utils_internal.hpp>
-#include <alibxx/crypto/base64.hpp>
-#include <alibxx/crypto/hmacsha.hpp>
+#include "libs/alibxx/crypto/base64.hpp"
+#include "libs/alibxx/crypto/hmacsha.hpp"
 #include <openssl/md5.h>
 #include <sys/mman.h>
 
@@ -134,6 +134,8 @@ std::string detect_region(const Uri &uri) {
 
     req.setParameters(p);
     req.executeRequest(&err);
+
+    DavixError::clearError(&err);
 
     std::string region;
     if(req.getAnswerHeader("x-amz-region", region)) {
@@ -239,7 +241,7 @@ void signRequestv2(const RequestParams & params, const std::string & method, con
 
     ss << extractCanonicalizedResourceQueryParams(url);
 
-    DAVIX_SLOG(DAVIX_LOG_TRACE, DAVIX_LOG_S3, "String to sign: {}", StrUtil::stringReplace(ss.str(), "\n", "\\n"));
+    DAVIX_SLOG(DAVIX_LOG_TRACE, DAVIX_LOG_S3, "String to sign (aws-alternate={}):  {}", params.getAwsAlternate(), StrUtil::stringReplace(ss.str(), "\n", "\\n"));
     headers.push_back(std::pair<std::string, std::string>("Authorization",  getAwsAuthorizationField(ss.str(), params.getAwsAutorizationKeys().first, params.getAwsAutorizationKeys().second)));
 }
 
@@ -362,7 +364,7 @@ Uri signURIv4(const RequestParams & params, const std::string & method, const Ur
                  << current_time("%Y%m%d") << "/" << params.getAwsRegion() << "/s3/aws4_request" << "\n"
                  << encoded_hash;
 
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_S3, "String to sign: {}", StrUtil::stringReplace(stringToSign.str(), "\n", "\\n"));
+    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_S3, "String to sign (aws-alternate={}): {}", params.getAwsAlternate(), StrUtil::stringReplace(stringToSign.str(), "\n", "\\n"));
     DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_S3, "String to sign bytes: {}", hexEncode(stringToSign.str(), " "));
 
     // whew.. now calculate the final signature
@@ -449,7 +451,10 @@ Uri s3UriTransformer(const Uri & original_url, const RequestParams & params, con
 
     std::string protocol;
 
-    if(original_url.getString().compare(2,1,"s") == 0){
+    const std::string url_string = original_url.getString();
+    std::size_t pos = url_string.find(':');
+
+    if(url_string.compare(pos-1,1,"s") == 0){
         protocol = "s3s://";
     }
     else{

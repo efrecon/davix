@@ -4,7 +4,7 @@
 
 #if __cplusplus >= 201103L
 #include <chrono>
-#elif HAVE_CLOCK_GETTIME
+#else
 #include <sys/syscall.h>
 #endif
 
@@ -27,7 +27,7 @@ void davix_get_monotonic_time(struct timespec *time_value){
 
     time_value->tv_sec  = sec.count();
     time_value->tv_nsec = chrono::duration_cast<chrono::nanoseconds>(now - sec).count();
-#elif defined(HAVE_CLOCK_GETTIME)
+#else
 #warning "Using clock_gettime"
     // todo: use the glibc wrapper for clock_gettime once it's available
     // on all the platforms we care about, instead of issuing a syscall
@@ -37,14 +37,8 @@ void davix_get_monotonic_time(struct timespec *time_value){
     // is passed on to ROOT, which often needs a static build of davix
     int ret = syscall(SYS_clock_gettime, CLOCK_MONOTONIC, time_value);
     if(ret < 0) {
-        std::cerr << "davix: Could not issue a syscall for clock_gettime.. Falling back to non-monotonic gettimeofday" << std::endl;
         gettimeofday_timespec(time_value);
     }
-#elif defined(HAVE_GETTIMEOFDAY)
-#warning "No support for a monotonic clock - using gettimeofday instead"
-    gettimeofday_timespec(time_value);
-#else
-#error "No C++11 support (steady_clock), no clock_gettime nor gettimeofday: No time support"
 #endif
 }
 }
@@ -103,7 +97,7 @@ Type::UInt64 TimePoint::toTimestamp() const{
 }
 
 
-bool TimePoint::isValid(){
+bool TimePoint::isValid() const {
     return (t.tv_sec != 0 && t.tv_nsec != 0);
 }
 
@@ -126,13 +120,20 @@ Duration::~Duration(){
 
 }
 
+Duration Duration::milliseconds(Type::UInt64 v) {
+    Duration d;
+    d.t.tv_sec = v / 1000;
+    d.t.tv_nsec = (v % 1000) * 1000;
+    return d;
+}
+
 Type::UInt64 Duration::toTimeValue() const{
     return t.tv_sec;
 }
 
-
-
-
+Type::UInt64 Duration::toMilliseconds() const {
+    return (t.tv_sec * 1000) + (t.tv_nsec / 1000000);
+}
 
 ///////////////////////////////
 //////////////////////////////

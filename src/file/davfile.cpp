@@ -20,6 +20,7 @@
 */
 
 #include <davix_internal.hpp>
+#include <core/ContentProvider.hpp>
 #include <file/davfile.hpp>
 #include <fileops/chain_factory.hpp>
 
@@ -237,37 +238,26 @@ int DavFile::putFromFd(const RequestParams* params,
 void DavFile::put(const RequestParams *params, int fd, dav_size_t size_write){
     HttpIOChain chain;
     IOChainContext io_context = d_ptr->getIOContext(params);
-    d_ptr->getIOChain(chain).writeFromFd(io_context, fd, size_write);
+
+    FdContentProvider provider(fd, 0, size_write);
+    d_ptr->getIOChain(chain).writeFromProvider(io_context, provider);
 }
 
 void DavFile::put(const RequestParams *params, const DataProviderFun &callback, dav_size_t size_write){
     HttpIOChain chain;
     IOChainContext io_context = d_ptr->getIOContext(params);
-    d_ptr->getIOChain(chain).writeFromCb(io_context, callback, size_write);
-}
 
-
-static dav_ssize_t buffer_mapper(void* buffer, dav_size_t max_size, const char* origin_buffer, dav_size_t buffer_size, dav_size_t* written_bytes){
-    dav_ssize_t res;
-
-    if(max_size ==0 || buffer_size == *written_bytes){
-        *written_bytes =0;
-        return 0;
-    }
-
-    res = std::min(max_size, buffer_size - *written_bytes);
-    memcpy(buffer, origin_buffer+ *written_bytes, res);
-    *written_bytes += res;
-
-    return res;
+    CallbackContentProvider provider(callback, size_write);
+    d_ptr->getIOChain(chain).writeFromProvider(io_context, provider);
 }
 
 void DavFile::put(const RequestParams *params, const char *buffer, dav_size_t size_write){
-    dav_size_t written_bytes=0;
-    put(params, std::bind(&buffer_mapper, std::placeholders::_1, std::placeholders::_2, buffer, size_write, &written_bytes), size_write);
+    HttpIOChain chain;
+    IOChainContext io_context = d_ptr->getIOContext(params);
+
+    BufferContentProvider provider(buffer, size_write);
+    d_ptr->getIOChain(chain).writeFromProvider(io_context, provider);
 }
-
-
 
 void DavFile::move(const RequestParams *params, DavFile & destination){
     HttpIOChain chain;

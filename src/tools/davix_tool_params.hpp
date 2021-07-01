@@ -79,6 +79,12 @@ struct OptParams{
     std::string azure_key;
     // gcloud credentials path
     std::string gcloud_creds_path;
+    // openstack token for swift
+    std::string os_token;
+    // openstack project id for swift
+    std::string os_project_id;
+    // swift account
+    std::string swift_account;
     // presentation flag
     int pres_flag;
     // shell flags

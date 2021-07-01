@@ -26,51 +26,70 @@
 #include <mutex>
 #include <utils/davix_uri.hpp>
 #include <neon/neonrequest.hpp>
+#include <core/SessionPool.hpp>
 
 namespace Davix {
 
 class HttpRequest;
 
+struct NeonHandle {
+    NeonHandle() : session(NULL) {}
+    NeonHandle(const std::string &k, ne_session *s) : key(k), session(s) {}
+    ~NeonHandle();
+
+    std::string key;
+    ne_session *session;
+};
+
+typedef std::shared_ptr<NeonHandle> NeonHandlePtr;
+
 class NEONSessionFactory
 {
-    friend class NEONRequest;
 public:
     NEONSessionFactory();
     virtual ~NEONSessionFactory();
 
-    /**
-      Create a session object or create a recycled  one ( session reuse )
-    */
-    int createNeonSession(const RequestParams & params, const Uri & uri, ne_session** sess, DavixError** err);
+    //--------------------------------------------------------------------------
+    // Create a NEONSession tied to this class.
+    //--------------------------------------------------------------------------
+    std::unique_ptr<NEONSession> provideNEONSession(const Uri &uri, const RequestParams &params, DavixError **err);
 
-    /**
-      store a Neon session object for session reuse purpose
-    */
-    int storeNeonSession(ne_session *sess);
+    //--------------------------------------------------------------------------
+    // Store a Neon session object for session reuse purposes
+    //--------------------------------------------------------------------------
+    void storeNeonSession(NeonHandlePtr sess);
 
-    //
-    // opts
-    //
-
+    //--------------------------------------------------------------------------
+    // Set caching on or off
+    //--------------------------------------------------------------------------
     void setSessionCaching(bool caching);
 
-    inline bool getSessionCaching() const {
-        return _session_caching;
-    }
+    //--------------------------------------------------------------------------
+    // Get caching status
+    //--------------------------------------------------------------------------
+    bool getSessionCaching() const;
 
 private:
-    // session pool
-    std::multimap<std::string, ne_session*> _sess_map;
-    std::mutex _sess_mut;
+    //--------------------------------------------------------------------------
+    // Neon session pool
+    //--------------------------------------------------------------------------
+    SessionPool<NeonHandlePtr> _session_pool;
+
+    NeonHandlePtr create_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port);
+    NeonHandlePtr create_recycled_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port);
+
+    //--------------------------------------------------------------------------
+    // Create a brand new neon session object, internal use only.
+    //--------------------------------------------------------------------------
+    NeonHandlePtr createNeonSession(const RequestParams & params, const Uri & uri, DavixError** err);
+
+    //--------------------------------------------------------------------------
+    // Variables to control session caching
+    //--------------------------------------------------------------------------
+    mutable std::mutex _session_caching_mtx;
     bool _session_caching;
 
-    void internal_release_session_handle(ne_session* sess);
-    ne_session* create_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port);
-    ne_session* create_recycled_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port);
 };
-
-void parse_http_neon_url(const std::string & url, std::string & protocol,
-                         std::string & host, std::string & path, unsigned long *port);
 
 std::string create_map_keys_from_URL(const std::string & protocol, const std::string &host, unsigned int port);
 

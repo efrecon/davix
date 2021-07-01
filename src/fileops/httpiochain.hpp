@@ -27,7 +27,7 @@
 namespace Davix{
 
 class HttpIOChain;
-
+class ContentProvider;
 
 #define CHAIN_FORWARD(X) \
         do{ \
@@ -154,17 +154,8 @@ public:
     // lseek prototype
     virtual dav_off_t lseek(IOChainContext & iocontext, dav_off_t offset, int flags);
 
-
-    // write the entire content from a file descriptor
-    virtual dav_ssize_t writeFromFd(IOChainContext & iocontext, int fd, dav_size_t size);
-
-
-    // wirte the entire content from a defined callback
-    virtual dav_ssize_t writeFromCb(IOChainContext & iocontext, const DataProviderFun & func, dav_size_t size);
-
-    // sequential write
-    virtual dav_ssize_t write(IOChainContext & iocontext, const void* buf, dav_size_t count);
-
+    // write provided contents
+    virtual dav_ssize_t writeFromProvider(IOChainContext & iocontext, ContentProvider &provider);
 
 protected:
     std::unique_ptr<HttpIOChain> _next;

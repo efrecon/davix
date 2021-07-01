@@ -90,6 +90,7 @@ struct RequestParamsInternal{
         _recursive_mode(false),
         _s3_listing_mode(S3ListingMode::Hierarchical),
         _s3_max_key_entries(10000),
+        _swift_listing_mode(SwiftListingMode::Hierarchical),
         _ca_path(),
         _x509_data(),
         _idlogpass(),
@@ -101,6 +102,9 @@ struct RequestParamsInternal{
         _aws_alternate(false),
         _azure_key(),
         _gcloud_creds(),
+        _os_token(),
+        _os_project_id(),
+        _swift_account(),
         ops_timeout(),
         connexion_timeout(),
         agent_string(default_agent),
@@ -138,6 +142,7 @@ struct RequestParamsInternal{
         _recursive_mode(param_private._recursive_mode),
         _s3_listing_mode(param_private._s3_listing_mode),
         _s3_max_key_entries(param_private._s3_max_key_entries),
+        _swift_listing_mode(param_private._swift_listing_mode),
         _ca_path(param_private._ca_path),
         _x509_data(param_private._x509_data),
         _idlogpass(param_private._idlogpass),
@@ -149,6 +154,9 @@ struct RequestParamsInternal{
         _aws_alternate(param_private._aws_alternate),
         _azure_key(param_private._azure_key),
         _gcloud_creds(param_private._gcloud_creds),
+        _os_token(param_private._os_token),
+        _os_project_id(param_private._os_project_id),
+        _swift_account(param_private._swift_account),
         ops_timeout(),
         connexion_timeout(),
         agent_string(param_private.agent_string),
@@ -176,6 +184,9 @@ struct RequestParamsInternal{
     // s3 bucket listing mode
     S3ListingMode::S3ListingMode _s3_listing_mode;
 
+    // swift listing mode
+    SwiftListingMode::SwiftListingMode _swift_listing_mode;
+
     // Max number of keys returned by a S3 list bucket request
     unsigned long _s3_max_key_entries;
 
@@ -194,6 +205,9 @@ struct RequestParamsInternal{
     bool _aws_alternate;
     AzureSecretKey _azure_key;
     gcloud::Credentials _gcloud_creds;
+    OSToken _os_token;
+    OSProjectID _os_project_id;
+    SwiftAccount _swift_account;
 
     // timeout management
     struct timespec ops_timeout;
@@ -403,12 +417,44 @@ const gcloud::Credentials & RequestParams::getGcloudCredentials() const {
     return d_ptr->_gcloud_creds;
 }
 
+void RequestParams::setOSToken(const OSToken &token) {
+    d_ptr->_os_token = token;
+}
+
+const OSToken & RequestParams::getOSToken() const {
+    return d_ptr->_os_token;
+}
+
+void RequestParams::setOSProjectID(const OSProjectID &id) {
+    d_ptr->_os_project_id = id;
+}
+
+const OSProjectID & RequestParams::getOSProjectID() const {
+    return d_ptr->_os_project_id;
+}
+
+void RequestParams::setSwiftAccount(const SwiftAccount &account) {
+    d_ptr->_swift_account = account;
+}
+
+const SwiftAccount & RequestParams::getSwiftAccount() const {
+    return d_ptr->_swift_account;
+}
+
 void RequestParams::setS3ListingMode(const S3ListingMode::S3ListingMode s3_listing_mode){
     d_ptr->_s3_listing_mode = s3_listing_mode;
 }
 
 S3ListingMode::S3ListingMode RequestParams::getS3ListingMode() const{
     return d_ptr->_s3_listing_mode;
+}
+
+void RequestParams::setSwiftListingMode(const SwiftListingMode::SwiftListingMode swift_listing_mode){
+    d_ptr->_swift_listing_mode = swift_listing_mode;
+}
+
+SwiftListingMode::SwiftListingMode RequestParams::getSwiftListingMode() const{
+    return d_ptr->_swift_listing_mode;
 }
 
 void RequestParams::setS3MaxKey(const unsigned long s3_max_key_entries){

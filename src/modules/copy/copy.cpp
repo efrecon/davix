@@ -28,6 +28,7 @@
 #include "delegation/delegation.hpp"
 #include <utils/davix_logger_internal.hpp>
 #include <utils/davix_gcloud_utils.hpp>
+#include <utils/stringutils.hpp>
 
 using namespace Davix;
 
@@ -76,7 +77,15 @@ static std::string _full_delegation_endpoint(const std::string& ref,
     return final;
 }
 
+static std::vector<std::string> parseXDelegateTo(const std::string& ref,
+  const std::string& uris, DavixError** err) {
 
+    std::vector<std::string> endpoints = StrUtil::tokenSplit(uris, " ");
+    for(size_t i = 0; i < endpoints.size(); i++) {
+        endpoints[i] = _full_delegation_endpoint(ref, endpoints[i], err);
+    }
+    return endpoints;
+}
 
 DavixCopy::DavixCopy(Context &c, const RequestParams *params): d_ptr(NULL)
 {
@@ -89,8 +98,6 @@ DavixCopy::~DavixCopy()
 {
     delete d_ptr;
 }
-
-
 
 void DavixCopy::copy(const Uri &source, const Uri &destination,
         unsigned nstreams, DavixError **error)
@@ -105,6 +112,10 @@ void DavixCopy::setPerformanceCallback(PerformanceCallback callback, void *udata
     d_ptr->setPerformanceCallback(callback, udata);
 }
 
+void DavixCopy::setCancellationCallback(CancellationCallback callback, void *udata)
+{
+    d_ptr->setCancellationCallback(callback, udata);
+}
 
 
 void DavixCopyInternal::setPerformanceCallback(DavixCopy::PerformanceCallback callback,
@@ -114,29 +125,64 @@ void DavixCopyInternal::setPerformanceCallback(DavixCopy::PerformanceCallback ca
     perfCallbackUdata = udata;
 }
 
+void DavixCopyInternal::setCancellationCallback(DavixCopy::CancellationCallback callback, void *udata)
+{
+    cancCallback = callback;
+    cancCallbackUdata = udata;
+}
 
+Uri dropDav(const Uri &uri) {
+    Uri retval(uri);
+
+    if(retval.getProtocol() == "dav") {
+        retval.setProtocol("http");
+    }
+    else if(retval.getProtocol() == "davs") {
+        retval.setProtocol("https");
+    }
+
+    return retval;
+}
+
+bool DavixCopyInternal::shouldCancel() {
+    if(!cancCallback) {
+        return false;
+    }
+
+    return cancCallback(cancCallbackUdata);
+}
+
+bool DavixCopyInternal::shouldCancel(Davix::DavixError **error) {
+    if(shouldCancel()) {
+        DavixError::clearError(error);
+        DavixError::setupError(error, COPY_SCOPE, StatusCode::Canceled, fmt::format("Request cancellation was requested."));
+        return true;
+    }
+
+    return false;
+}
 
 void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
         unsigned nstreams, DavixError **error)
 {
-    //std::string nextSrc(src.getString()), prevSrc(src.getString());
-    //std::string destination(dst.getString());
     std::string nextSrc, prevSrc, destination;
     std::string delegationEndpoint;
     DavixError *internalError = NULL;
     bool suppressFinalHead = false;
 
+    Uri srcHttp = dropDav(src);
+    Uri dstHttp = dropDav(dst);
+
     // set source and destination according to copy method
     if(parameters->getCopyMode() == CopyMode::Push){
-        nextSrc = src.getString();
-        prevSrc = src.getString();
-        destination = dst.getString();
+        nextSrc = srcHttp.getString();
+        prevSrc = srcHttp.getString();
+        destination = dstHttp.getString();
     }else if(parameters->getCopyMode() == CopyMode::Pull){
-        nextSrc = dst.getString();
-        prevSrc = dst.getString();
-        destination = src.getString();
+        nextSrc = dstHttp.getString();
+        prevSrc = dstHttp.getString();
+        destination = srcHttp.getString();
     }
-
 
     // nstreams as string
     char nstreamsStr[16];
@@ -145,8 +191,6 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
     // Need a copy so we can modify it
     Davix::RequestParams requestParams(parameters);
     requestParams.setTransparentRedirectionSupport(false);
-
-    size_t start_pos;
 
     // if destination is s3 endpoint, change prefix to http(s) and pre-sign the request as a PUT
     if(destination.compare(0,2,"s3") == 0){
@@ -228,9 +272,7 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
 
         // If we get a X-Delegate-To, before continuing, delegate
         if (request->getAnswerHeader("X-Delegate-To", delegationEndpoint)) {
-            delegationEndpoint = _full_delegation_endpoint(nextSrc,
-                                                           delegationEndpoint,
-                                                           &internalError);
+            std::vector<std::string> delegationEndpoints = parseXDelegateTo(nextSrc, delegationEndpoint, &internalError);
             if (internalError) {
                 DavixError::propagatePrefixedError(error, internalError, __func__);
                 break;
@@ -239,7 +281,7 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
             DAVIX_SLOG(DAVIX_LOG_VERBOSE, DAVIX_LOG_GRID, "Got delegation endpoint: {}",
                          delegationEndpoint.c_str());
 
-            std::string dlg_id = DavixDelegation::delegate(context, delegationEndpoint,
+            std::string dlg_id = DavixDelegation::delegate(context, delegationEndpoints,
                     parameters, &internalError);
             if (internalError) {
                 DavixError::propagatePrefixedError(error, internalError, __func__);
@@ -252,7 +294,7 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
             dlg_id.clear();
         }
 
-    } while (request->getAnswerHeader("Location", nextSrc) && request->getRequestCode() >= 300 && request->getRequestCode() < 400);
+    } while (!shouldCancel() && request->getAnswerHeader("Location", nextSrc) && request->getRequestCode() >= 300 && request->getRequestCode() < 400);
 
     if (!*error) {
         int responseStatus = request->getRequestCode();
@@ -285,6 +327,10 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
         }
     }
 
+    if(shouldCancel(error)) {
+        return;
+    }
+
     // Did we fail?
     if (*error)
         return;
@@ -295,8 +341,13 @@ void DavixCopyInternal::copy(const Uri &src, const Uri &dst,
     // Just wait for it to finish
     monitorPerformanceMarkers(request, error);
     request->endRequest(&internalError);
+
     if(internalError && !(*error) ) {
         DavixError::propagatePrefixedError(error, internalError, __func__);
+    }
+
+    if(shouldCancel(error)) {
+        return;
     }
 
     delete request;
@@ -314,8 +365,9 @@ void DavixCopyInternal::monitorPerformanceMarkers(Davix::HttpRequest *request,
     PerformanceMarker holder;
     PerformanceData performance;
     time_t lastPerfCallback = time(NULL);
+    bool clearOutcome = false;
 
-    while ((line_len = request->readLine(buffer, sizeof(buffer), &daverr)) >= 0 && !daverr)
+    while ((line_len = request->readLine(buffer, sizeof(buffer), &daverr)) > 0 && !daverr && !shouldCancel())
     {
         buffer[line_len] = '\0';
 
@@ -360,17 +412,20 @@ void DavixCopyInternal::monitorPerformanceMarkers(Davix::HttpRequest *request,
         }
         else if (strncasecmp("success", p, 7) == 0)
         {
+            clearOutcome = true;
             request->discardBody(&daverr);
             break;
         }
         else if (strncasecmp("aborted", p, 7) == 0)
         {
+            clearOutcome = true;
             Davix::DavixError::setupError(error, COPY_SCOPE, StatusCode::Canceled,
                     "Transfer aborted in the remote end");
             break;
         }
         else if (strncasecmp("failed", p, 6) == 0 || strncasecmp("failure", p, 7) == 0)
         {
+            clearOutcome = true;
             Davix::DavixError::setupError(error, COPY_SCOPE, StatusCode::RemoteError,
                     std::string("Transfer failed: ") + p);
             break;
@@ -379,5 +434,10 @@ void DavixCopyInternal::monitorPerformanceMarkers(Davix::HttpRequest *request,
         {
             DAVIX_SLOG(DAVIX_LOG_WARNING, DAVIX_LOG_GRID, "Unknown performance marker, ignoring: {}", buffer);
         }
+    }
+
+    if(!clearOutcome && !(*error)) {
+        Davix::DavixError::setupError(error, COPY_SCOPE, StatusCode::UnknowError,
+            std::string("Connection terminated abruptly; Status of TPC request unknown"));
     }
 }

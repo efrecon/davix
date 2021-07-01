@@ -56,7 +56,9 @@ namespace RequestProtocol{
         // Use Microsoft Azure API
         Azure,
         // Use gcloud API
-        Gcloud
+        Gcloud,
+        // Use Swift API
+        Swift
     };
 }
 
@@ -81,6 +83,15 @@ namespace S3ListingMode{
         SemiHierarchical,
         // Flat listing
         Flat
+    };
+}
+
+namespace SwiftListingMode{
+    enum SwiftListingMode{
+        // Full hierarchical listing (depth is 1)
+        Hierarchical,
+        // Semi-hierarchical listing (depth is infinity)
+        SemiHierarchical
     };
 }
 
@@ -114,6 +125,21 @@ typedef std::string AwsToken;
 /// \brief string for Azure private key
 ///
 typedef std::string AzureSecretKey;
+
+///
+/// \brief string for Openstack token
+///
+typedef std::string OSToken;
+
+///
+/// \brief string for Openstack project ID
+///
+typedef std::string OSProjectID;
+
+///
+/// \brief string for Swift Account
+///
+typedef  std::string SwiftAccount;
 
 #ifdef __DAVIX_HAS_STD_FUNCTION
 

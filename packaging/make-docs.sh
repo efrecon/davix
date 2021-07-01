@@ -11,9 +11,11 @@ dnf builddep -y build/SRPMS/*
 #-------------------------------------------------------------------------------
 # Generate a docs folder - run this from the root of the git repository.
 #-------------------------------------------------------------------------------
+SPHINX_DIR="${PWD}/doc/sphinx"
+
 rm -rf build
 mkdir build && cd build
-cmake -DENABLE_HTML_DOCS=TRUE ..
+sphinx-build-3 -q -b html "${SPHINX_DIR}" "${PWD}/doc/build/html/"
 
-make sphinx
+cmake -DENABLE_HTML_DOCS=TRUE ..
 make doc

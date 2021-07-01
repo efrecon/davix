@@ -24,8 +24,8 @@
 
 #include <utils/davix_logger_internal.hpp>
 #include <status/davixstatusrequest.hpp>
-#include <datetime/datetime_utils.hpp>
-#include <string_utils/stringutils.hpp>
+#include "libs/datetime/datetime_utils.hpp"
+#include <utils/stringutils.hpp>
 
 using namespace StrUtil;
 
@@ -165,6 +165,15 @@ static void check_mode_ext(DavPropXMLParser::DavxPropXmlIntern & par, const std:
     par._current_props.info.mode = (mode_t) mymode;
 }
 
+static bool startswith(const std::string &str, const std::string &prefix) {
+  if(prefix.size() > str.size()) return false;
+
+  for(size_t i = 0; i < prefix.size(); i++) {
+    if(str[i] != prefix[i]) return false;
+  }
+  return true;
+}
+
 static void check_href(DavPropXMLParser::DavxPropXmlIntern & par,  const std::string & name){
     std::string _href(name);
     rtrim(_href, isSlash()); // remove trailing slash
@@ -173,6 +182,10 @@ static void check_href(DavPropXMLParser::DavxPropXmlIntern & par,  const std::st
         par._last_filename.assign(_href);
     }else{
         par._last_filename.assign(it.base(), _href.end());
+
+        if(startswith(name, "https://") || startswith(name, "http://") || startswith(name, "://") || startswith(name, "dav://") || startswith(name, "davs://")) {
+          par._last_filename = Uri::unescapeString(par._last_filename);
+        }
     }
    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_XML, " href/filename parsed -> {} ", par._last_filename.c_str() );
 }

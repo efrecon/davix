@@ -8,25 +8,19 @@
 #include <davix.hpp>
 #include "davix_test_lib.h"
 #include "utils/davix_s3_utils.hpp"
+#include "../TestcaseHandler.hpp"
 
 using namespace Davix;
+using std::placeholders::_1;
 
+#define DBG(message) std::cerr << __FILE__ << ":" << __LINE__ << " -- " << #message << " = " << message << std::endl;
 #define SSTR(message) static_cast<std::ostringstream&>(std::ostringstream().flush() << message).str()
-#define DECLARE_TEST() std::cout << " ----- Performing test: " << __FUNCTION__ << " on " << uri << std::endl
 
 #include "lorem-ipsum.h" // define std::string teststring
 const std::string testfile("davix-testfile-");
 
 #define ASSERT(assertion, msg) \
     if((assertion) == false) throw std::runtime_error( SSTR(__FILE__ << ":" << __LINE__ << " (" << __func__ << "): Assertion " << #assertion << " failed.\n" << msg))
-
-void initialization(int argc, char** argv) {
-    std::cout << "Command: ";
-    for(int i = 0; i < argc; i++) {
-        std::cout << std::string(argv[i]) << " ";
-    }
-    std::cout << std::endl;
-}
 
 std::vector<std::string> split(const std::string str, const std::string delim) {
     size_t prev = 0, cur;
@@ -43,7 +37,7 @@ std::vector<std::string> split(const std::string str, const std::string delim) {
 }
 
 namespace Auth {
-enum Type {AWS, PROXY, AZURE, NONE, ILLEGAL};
+enum Type {AWS, PROXY, AZURE, SWIFT, NONE, ILLEGAL};
 Type fromString(const std::string &str) {
     if(str == "aws")
         return Auth::AWS;
@@ -51,6 +45,8 @@ Type fromString(const std::string &str) {
         return Auth::PROXY;
     if(str == "azure")
         return Auth::AZURE;
+    if(str == "swift")
+        return Auth::SWIFT;
     if(str == "none")
         return Auth::NONE;
 
@@ -68,7 +64,7 @@ static option::ArgStatus option_nonempty(const option::Option& option, bool msg)
 
 namespace Opt {
 enum  Type { UNKNOWN, HELP, AUTH, S3ACCESSKEY, S3SECRETKEY, S3REGION,
-                    AZUREKEY, S3ALTERNATE, CERT, URI, TRACE, COMMAND };
+                    AZUREKEY, S3ALTERNATE, CERT, URI, TRACE, COMMAND, OSTOKEN, OSPROJECTID, SWIFTACCOUNT};
 }
 
 bool verify_options_sane(option::Parser &parse, std::vector<option::Option> &options) {
@@ -109,6 +105,9 @@ std::vector<option::Option> parse_args(int argc, char** argv) {
         {Opt::URI, 0, "", "uri", option_nonempty, "--uri uri to test against"},
         {Opt::TRACE, 0, "", "trace", option_nonempty, "--trace debug scope"},
         {Opt::COMMAND, 0, "", "command", option_nonempty, "--command test to run"},
+        {Opt::OSTOKEN, 0, "", "ostoken", option_nonempty, "--ostoken Openstack token"},
+        {Opt::OSPROJECTID, 0, "", "osprojectid", option_nonempty, "--osprojectid Openstack project id"},
+        {Opt::SWIFTACCOUNT, 0, "", "swiftaccount", option_nonempty, "--swiftaccount Swift Account"},
         {Opt::UNKNOWN, 0, "", "",option::Arg::None, "\nExamples:\n"
                                                "  tester --auth proxy --uri https://storage/davix-tests --command makeCollection" },
 
@@ -153,23 +152,53 @@ void authentication(const std::vector<option::Option> &opts, const Auth::Type &a
         params.setProtocol(RequestProtocol::Azure);
         params.setAzureKey(retrieve(opts, Opt::AZUREKEY));
     }
+    else if(auth == Auth::SWIFT) {
+        ASSERT(opts[Opt::OSTOKEN] != NULL, "--ostoken is required when using swift");
+        if(opts[Opt::OSPROJECTID] == NULL && opts[Opt::SWIFTACCOUNT] == NULL) {
+            std::cout << "--osprojectid or --swiftaccount is required when using swift" << std::endl;
+            std::abort();
+        }
+
+        params.setProtocol(RequestProtocol::Swift);
+        params.setOSToken(retrieve(opts, Opt::OSTOKEN));
+        params.setOSProjectID(retrieve(opts, Opt::OSPROJECTID));
+        params.setSwiftAccount(retrieve(opts, Opt::SWIFTACCOUNT));
+    }
     else {
         ASSERT(false, "unknown authentication method");
     }
 }
 
-void depopulate(const RequestParams &params, Uri uri, int nfiles) {
-    DECLARE_TEST();
+void remove(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
+    handler.setName(SSTR("Delete " << uri.getString()));
+
+    // a very dangerous test.. Make sure that uri at least
+    // contains "davix-test" in its path.
+    bool safePath = uri.getPath().find("davix-test") != std::string::npos;
+    handler.check(safePath, "Path is safe and contains 'davix-test'");
+    if(!safePath) return;
+
+    Context context;
+
+    try {
+        DavFile file(context, params, uri);
+        file.deletion(&params);
+        handler.pass("Deletion successful");
+    }
+    catch(const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
+}
+
+void depopulate(TestcaseHandler &handler, const RequestParams &params, Uri uri, int nfiles) {
+    handler.setName(SSTR("Depopulate " << uri.getString() << ", remove " << nfiles << " files"));
 
     Context context;
     for(int i = 1; i <= nfiles; i++) {
         Uri u(uri);
         u.addPathSegment(SSTR(testfile << i));
-        DavFile file(context, params, u);
-        file.deletion(&params);
-        std::cout << "File " << i << " deleted successfully." << std::endl;
+        remove(handler.makeChild(), params, u);
     }
-    std::cout << "All OK" << std::endl;
 }
 
 std::string string_from_mode(mode_t mode){
@@ -183,42 +212,53 @@ std::string string_from_mode(mode_t mode){
     return str;
 }
 
-void statdir(const RequestParams &params, Uri uri) {
-    DECLARE_TEST();
+void statdir(TestcaseHandler &handler, const RequestParams &params, Uri uri) {
+    handler.setName(SSTR("Stat on " << uri.getString() << ", ensure is a directory"));
+
     Context context;
     DavFile file(context, params, uri);
     StatInfo info;
     file.statInfo(&params, info);
-    std::cout << string_from_mode(info.mode) << std::endl;
 
-    ASSERT(S_ISDIR(info.mode), "not a directory");
+    handler.info(SSTR("Mode: " << string_from_mode(info.mode)));
+    handler.info(SSTR("Size: " << info.size));
+
+    // http / https will use a HEAD, from which we can't determine if this is
+    // a directory or not
+    if(uri.getProtocol() != "http" && uri.getProtocol() != "https") {
+        handler.check(S_ISDIR(info.mode), "Ensure S_ISDIR shows a directory");
+    }
 }
 
-void makeCollection(const RequestParams &params, Uri uri) {
-    DECLARE_TEST();
+void makeCollection(TestcaseHandler &handler, const RequestParams &params, Uri uri) {
+    handler.setName(SSTR("Create directory on " << uri.getString()));
+
+    DavixError* err = NULL;
 
     Context context;
     DavFile file(context, params, uri);
-    file.makeCollection(&params);
+    file.makeCollection(&params, &err);
+    if(!handler.checkDavixError(&err)) return;
 
     // make sure it is empty
     DavFile::Iterator it = file.listCollection(&params);
-    ASSERT(it.name() == "" && !it.next(), "Newly created directory not empty!");
+    handler.check(it.name() == "" && !it.next(), "Ensure newly created directory is empty");
 
     // do a stat, make sure it's a dir
-    statdir(params, uri);
+    statdir(handler.makeChild(), params, uri);
 
     Uri u2 = uri;
     u2.ensureTrailingSlash();
-    statdir(params, u2);
-
-    std::cout << "Done!" << std::endl;
+    statdir(handler.makeChild(), params, u2);
 }
 
 #define NEON_S3_SIGN_DURATION 3600
 
-void statfileFromSignedURI(const RequestParams &params, const Uri uri) {
-  DECLARE_TEST();
+//------------------------------------------------------------------------------
+// stat a file through signed URI, make sure it's a file.
+//------------------------------------------------------------------------------
+void statfileFromSignedURI(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
+  handler.setName(SSTR("Stat file through signed uri on " << uri.getString()));
 
   Uri signedURI(S3::signURI(params, "GET", uri, params.getHeaders(), NEON_S3_SIGN_DURATION));
   RequestParams params2(params);
@@ -234,116 +274,193 @@ void statfileFromSignedURI(const RequestParams &params, const Uri uri) {
   DavFile file(context, params2, signedURI);
   StatInfo info;
   file.statInfo(&params2, info);
-  std::cout << string_from_mode(info.mode) << std::endl;
 
-  ASSERT(! S_ISDIR(info.mode), "not a file");
+  handler.info(SSTR("Mode: " << string_from_mode(info.mode)));
+  handler.info(SSTR("Size: " << info.size));
+  handler.check(!S_ISDIR(info.mode), "Ensure S_ISDIR shows a file");
 }
 
-/* stat a file, make sure it's a file */
-void statfile(const RequestParams &params, const Uri uri) {
-    DECLARE_TEST();
+//------------------------------------------------------------------------------
+// stat a file, make sure it's a file.
+//------------------------------------------------------------------------------
+void statfile(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
+    handler.setName(SSTR("Stat on " << uri.getString() << ", ensure is a file"));
+
     Context context;
     DavFile file(context, params, uri);
     StatInfo info;
-    file.statInfo(&params, info);
-    std::cout << string_from_mode(info.mode) << std::endl;
 
-    ASSERT(! S_ISDIR(info.mode), "not a file");
+    try {
+        file.statInfo(&params, info);
+        handler.info(SSTR("Mode: " << string_from_mode(info.mode)));
+        handler.info(SSTR("Size: " << info.size));
+
+        handler.check(!S_ISDIR(info.mode), "Ensure S_ISDIR shows a file");
+    }
+    catch(const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
+
 
     if(!params.getAwsAutorizationKeys().first.empty()) {
       // Now try statting through the signed URL
-      statfileFromSignedURI(params, uri);
+      statfileFromSignedURI(handler.makeChild(), params, uri);
     }
 }
 
-void movefile(const RequestParams &params, const Uri uri) {
-    DECLARE_TEST();
-    Context context;
+void movefile(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
     Uri u1(uri);
     Uri u2(uri);
 
     u1.addPathSegment(SSTR(testfile << 1));
     u2.addPathSegment(SSTR(testfile << 1 << "-moved"));
 
+    handler.setName(SSTR("Move " << u1.getString() << " to " << u2.getString()));
+
+    Context context;
+
     DavFile source(context, params, u1);
     DavFile dest(context, params, u2);
 
-    source.move(&params, dest);
-    statfile(params, u2);
-    dest.move(&params, source);
+    try {
+        source.move(&params, dest);
+        statfile(handler.makeChild(), params, u2);
+        dest.move(&params, source);
+        handler.pass("Move successful");
+    }
+    catch(const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
 }
 
-void populate(const RequestParams &params, const Uri uri, const int nfiles) {
-    DECLARE_TEST();
+void uploadFile(TestcaseHandler &handler, Context &ctx, const RequestParams &params, const Uri uri) {
+    handler.setName(SSTR("Upload testfile to " << uri.getString()));
+
+    DavFile file(ctx, params, uri);
+
+    try {
+        file.put(NULL, testString.c_str(), testString.size());
+        handler.pass(SSTR("File " << uri.getString() << " uploaded."));
+    }
+    catch(const DavixException &err) {
+        handler.fail(SSTR("Exception: " << err.what()));
+    }
+
+    statfile(handler, params, uri);
+}
+
+void populate(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const int nfiles) {
+    handler.setName(SSTR("Populate " << uri.getString() << " with " << nfiles << " files"));
 
     Context context;
     for(int i = 1; i <= nfiles; i++) {
         Uri u(uri);
         u.addPathSegment(SSTR(testfile << i));
-        DavFile file(context, params, u);
-        file.put(NULL, testString.c_str(), testString.size());
-        std::cout << "File " << i << " uploaded successfully." << std::endl;
-        std::cout << u << std::endl;
-
-        statfile(params, u);
+        uploadFile(handler.makeChild(), context, params, u);
     }
 }
 
 // count the number of files in folder
-void countfiles(const RequestParams &params, const Uri uri, const int nfiles) {
-    DECLARE_TEST();
-    Context context;
-    DavFile file(context, params, uri);
-    DavFile::Iterator it = file.listCollection(&params);
-    int i = 0;
+void countfiles(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const int nfiles) {
+    handler.setName(SSTR("List " << uri.getString() << ", expect " << nfiles << " files"));
 
-    do {
-        i++;
-    } while(it.next());
+    try {
+        Context context;
+        DavFile file(context, params, uri);
+        DavFile::Iterator it = file.listCollection(&params);
+        int i = 0;
 
-    ASSERT(i == nfiles, "wrong number of files; expected " << nfiles << ", found " << i);
-    std::cout << "All OK" << std::endl;
+        do {
+            // workaround for Swift, discard the first entry which is the directory created before
+            if(params.getProtocol() == RequestProtocol::Swift && i == 0){
+                it.next();
+            }
+            i++;
+        } while(it.next());
+
+        handler.check(i == nfiles, SSTR("Directory contains " << nfiles << " files"));
+    }
+    catch(const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
 }
 
 // confirm that the files listed are the exact same ones uploaded during a populate test
-void listing(const RequestParams &params, const Uri uri, const int nfiles) {
-    DECLARE_TEST();
-    int hits[nfiles+1];
-    for(int i = 0; i <= nfiles; i++) hits[i] = 0;
+void listing(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const int nfiles) {
+    handler.setName(SSTR("List " << uri.getString() << ", expect " << nfiles << " files"));
 
-    Context context;
-    DavFile file(context, params, uri);
-    DavFile::Iterator it = file.listCollection(&params);
+    try {
+        int hits[nfiles+1];
+        for(int i = 0; i <= nfiles; i++) hits[i] = 0;
 
-    int i = 0;
-    do {
-        i++;
-        std::string name = it.name();
-        std::cout << "Found " << name << std::endl;
+        Context context;
+        DavFile file(context, params, uri);
+        DavFile::Iterator it = file.listCollection(&params);
 
-        // make sure the filenames are the same as the ones we uploaded
-        ASSERT(name.size() > testfile.size(), "Unexpected filename: " << name);
-        std::string part1 = name.substr(0, testfile.size());
-        std::string part2 = name.substr(testfile.size(), name.size()-1);
+        int i = 0;
+        do {
+            // workaround for Swift, discard the first entry which is the directory created before
+            if(params.getProtocol() == RequestProtocol::Swift && i == 0){
+                it.next();
+            }
+            i++;
+            std::string name = it.name();
 
-        ASSERT(part1 == testfile, "Unexpected filename: " << part1);
-        int num = atoi(part2.c_str());
-        ASSERT(num > 0, "Unexpected file number: " << num);
-        ASSERT(num <= nfiles, "Unexpected file number: " << num);
-        hits[num]++;
-    } while(it.next());
+            // make sure the filenames are the same as the ones we uploaded
+            if(name.size() <= testfile.size()) {
+                handler.fail(SSTR("Unexpected filename: " << name));
+                return;
+            }
 
-    // count all hits to make sure all have exactly one
-    ASSERT(i == nfiles, "wrong number of files; expected " << nfiles << ", found " << i);
-    for(int i = 1; i <= nfiles; i++)
-        ASSERT(hits[i] == 1, "hits check for file" << i << " failed. Expected 1, found " << hits[i]);
+            std::string part1 = name.substr(0, testfile.size());
+            std::string part2 = name.substr(testfile.size(), name.size()-1);
 
-    std::cout << "All OK" << std::endl;
+            if(part1 != testfile) {
+                handler.fail(SSTR("Unexpected filename: " << part1));
+                return;
+            }
+
+            int num = atoi(part2.c_str());
+            if(num <= 0 || num > nfiles) {
+                handler.fail(SSTR("Unexpected file number: " << num));
+                return;
+            }
+
+            hits[num]++;
+        } while(it.next());
+
+        handler.check(i == nfiles, SSTR("Ensure directory contains " << nfiles << " files"));
+
+        // count all hits to make sure all have exactly one
+        for(int i = 1; i <= nfiles; i++) {
+            handler.check(hits[i] == 1, SSTR("Ensure testfile #" << i << " is found"));
+        }
+    }
+    catch(const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
+}
+
+void checksum(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const std::string chk_algo) {
+    handler.setName(SSTR("Get checksum of file: " << uri.getString()));
+
+    try {
+        Context context;
+        DavFile file(context, params, uri);
+
+        std::string chk;
+        DavixError* err = NULL;
+        file.checksum(&params, chk, chk_algo, &err);
+        handler.pass(SSTR("File " << chk_algo << " checksum is " << chk));
+    } catch (const DavixException &exc) {
+        handler.fail(SSTR("Exception: " << exc.what()));
+    }
 }
 
 /* upload a file and move it around */
-void putMoveDelete(const RequestParams &params, const Uri uri) {
-    DECLARE_TEST();
+void putMoveDelete(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
+    handler.setName(SSTR("Put-move-delete on " << uri.getString()));
+
     Uri u = uri;
     Uri u2 = uri;
     u.addPathSegment(SSTR(testfile << "put-move-delete"));
@@ -352,29 +469,36 @@ void putMoveDelete(const RequestParams &params, const Uri uri) {
     Context context;
     DavFile file(context, params, u);
     file.put(&params, testString.c_str(), testString.size());
+    handler.pass(SSTR("Put on " << u.getString()));
 
     DavFile movedFile(context, params, u2);
     file.move(&params, movedFile);
+    handler.pass(SSTR("Move on " << u2.getString()));
 
     movedFile.deletion(&params);
-    std::cout << "All OK" << std::endl;
+    handler.pass(SSTR("Delete on " << u2.getString()));
 }
 
-void remove(const RequestParams &params, const Uri uri) {
-    DECLARE_TEST();
+//------------------------------------------------------------------------------
+// Concatenate vector into a string
+//------------------------------------------------------------------------------
+static std::string vecToString(const std::vector<std::string> &vec, const std::string &delim) {
+    std::ostringstream ss;
+    for(size_t i = 0; i < vec.size(); i++) {
+        ss << vec[i];
 
-    // a very dangerous test.. Make sure that uri at least
-    // contains "davix-test" in its path.
-    bool safePath = uri.getPath().find("davix-test") != std::string::npos;
-    ASSERT(safePath, "Uri given does not contain the string 'davix-test'. Refusing to perform delete operation for safety.");
+        if(i != vec.size() - 1) {
+            ss << delim;
+        }
+    }
 
-    Context context;
-    DavFile file(context, params, uri);
-    file.deletion(&params);
+    return ss.str();
 }
 
-void preadvec(const RequestParams &params, const Uri uri, const std::string str_ranges, std::vector<std::string> options) {
-    DECLARE_TEST();
+void preadvec(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const std::string str_ranges, std::vector<std::string> options) {
+    handler.setName(SSTR("preadvec on " << uri.getString()));
+    handler.info(SSTR("Options: " << str_ranges << " | " << vecToString(options, ",")));
+
     Uri u = uri;
 
     std::string filename = SSTR(testfile << 1);
@@ -389,16 +513,27 @@ void preadvec(const RequestParams &params, const Uri uri, const std::string str_
         }
         else if(it->find("nconnections=", 0) == 0) {
             int nconnections = atoi(it->c_str() + 13);
-            ASSERT(nconnections > 0, "Unable to parse nconnections");
+
+            if(nconnections <= 0) {
+                handler.fail("Unable to parse nconnections");
+                return;
+            }
+
             u.addFragmentParam("nconnections", SSTR(nconnections));
         }
         else if(it->find("mergewindow=", 0) == 0) {
             int mergewindow = atoi(it->c_str() + 12);
-            ASSERT(mergewindow > 0, "Unable to parse mergewindow");
+
+            if(mergewindow <= 0) {
+                handler.fail("Unable to parse mergewindow");
+                return;
+            }
+
             u.addFragmentParam("mergewindow", SSTR(mergewindow));
         }
         else {
-            ASSERT(false, "Unknown option to preadvec: " << *it);
+            handler.fail(SSTR("Unknown option to preadvec: " << *it));
+            return;
         }
     }
 
@@ -410,52 +545,77 @@ void preadvec(const RequestParams &params, const Uri uri, const std::string str_
     DavIOVecInput inVec[ranges.size()];
     DavIOVecOuput outVec[ranges.size()];
 
+    std::vector<std::unique_ptr<std::string>> buffers;
+
     for(size_t i = 0; i < ranges.size(); i++) {
         std::vector<std::string> parts = split(ranges[i], "-");
-        ASSERT(parts.size() == 2, "Cannot parse range");
+
+        if(parts.size() != 2) {
+            handler.fail(SSTR("Cannot parse range: " << ranges[i]));
+            return;
+        }
+
         dav_off_t start = atoi(parts[0].c_str());
         dav_off_t end = atoi(parts[1].c_str());
 
         dav_ssize_t size = end - start + 1;
 
-        inVec[i].diov_buffer = new char[size];
+        buffers.emplace_back(new std::string(size, ' '));
+        inVec[i].diov_buffer = (void*) buffers.back()->c_str(); // new char[size];
         inVec[i].diov_size = size;
         inVec[i].diov_offset = start;
-
-        std::cout << "Adding range: " << start << "-" << end << std::endl;
     }
 
     Context context;
     DavFile file(context, params, u);
     DavixError *err = NULL;
     file.readPartialBufferVec(&params, inVec, outVec, ranges.size(), &err);
+    if(!handler.checkDavixError(&err)) return;
 
     for(size_t i = 0; i < ranges.size(); i++) {
         std::string chunk( (char*) outVec[i].diov_buffer, outVec[i].diov_size);
-        std::cout << "Chunk: " << chunk << std::endl;
 
-        ASSERT(chunk.size() == inVec[i].diov_size, "unexpected chunk size");
+        handler.check(chunk.size() == inVec[i].diov_size, SSTR("Validate chunk #" << i << " size"));
+
         if(filename == SSTR(testfile << 1)) {
-            ASSERT(chunk == testString.substr(inVec[i].diov_offset, inVec[i].diov_size), "wrong chunk contents");
+            handler.check(chunk == testString.substr(inVec[i].diov_offset, inVec[i].diov_size), SSTR("Validate chunk #" << i << " contents"));
         }
     }
-    std::cout << "All OK" << std::endl;
 }
 
-void detectwebdav(const RequestParams &params, const Uri uri, bool result) {
-    DECLARE_TEST();
+void preadvec_all_opts(TestcaseHandler &handler, const RequestParams &params, const Uri uri, const std::string str_ranges) {
+    handler.setName(SSTR("preadvec-all-opts on " << uri.getString() << ": " << str_ranges));
+
+    preadvec(handler.makeChild(), params, uri, str_ranges, split("mergewindow=1", ","));
+    preadvec(handler.makeChild(), params, uri, str_ranges, split("mergewindow=1000", ","));
+    preadvec(handler.makeChild(), params, uri, str_ranges, split("nomulti,mergewindow=1", ","));
+    preadvec(handler.makeChild(), params, uri, str_ranges, split("nomulti,mergewindow=1", ","));
+}
+
+void preadvec_all(TestcaseHandler &handler, const RequestParams &params, const Uri uri) {
+    handler.setName(SSTR("preadvec-all on " << uri.getString()));
+
+    preadvec_all_opts(handler.makeChild(), params, uri, "0-10,5-10,3-4,30-40,200-305,1000-1500");
+    preadvec_all_opts(handler.makeChild(), params, uri, "0-10,5-10");
+    preadvec_all_opts(handler.makeChild(), params, uri, "0-10,15-20");
+}
+
+void detectwebdav(TestcaseHandler &handler, const RequestParams &params, const Uri uri, bool result) {
+    handler.setName(SSTR("Detect WebDAV support on " << uri.getString() << ", expect " << result));
 
     Context context;
     DavixError *err = NULL;
     WebdavSupport::Type res = detect_webdav_support(context, params, uri, &err);
+
     if(result) {
+        handler.check(res == WebdavSupport::YES, "Ensure endpoint has WebDAV support");
         ASSERT(res == WebdavSupport::YES, "");
     }
     else if(!result) {
-        ASSERT(res == WebdavSupport::NO || res == WebdavSupport::UNKNOWN, "");
+        handler.check(res == WebdavSupport::NO || res == WebdavSupport::UNKNOWN, "Ensure endpoint does not have WebDAV support");
     }
     else {
-      ASSERT(false, "Unknown result");
+        handler.fail("Unknown failure");
     }
 }
 
@@ -464,7 +624,7 @@ void assert_args(const std::vector<std::string> &cmd, int nargs) {
     ASSERT(cmd.size() == nargs+1, "Wrong number of arguments to " << cmd[0] << ": " << cmd.size()-1 << ", expected: " << nargs);
 }
 
-void run(int argc, char** argv) {
+bool run(int argc, char** argv) {
     RequestParams params;
     params.setOperationRetry(0);
 
@@ -486,58 +646,72 @@ void run(int argc, char** argv) {
     Uri uri = Uri(retrieve(opts, Opt::URI));
     authentication(opts, auth, params);
 
+    TestcaseHandler handler;
+
     if(cmd[0] == "makeCollection") {
         assert_args(cmd, 0);
-        makeCollection(params, uri);
+        makeCollection(handler, params, uri);
     }
     else if(cmd[0] == "populate") {
         assert_args(cmd, 1);
-        populate(params, uri, atoi(cmd[1].c_str()));
+        populate(handler, params, uri, atoi(cmd[1].c_str()));
+    }
+    else if(cmd[0] == "checksum") {
+        assert_args(cmd, 1);
+        checksum(handler, params, uri, cmd[1].c_str());
     }
     else if(cmd[0] == "remove") {
         assert_args(cmd, 0);
         ASSERT(cmd.size() == 1, "Wrong number of arguments to remove");
-        remove(params, uri);
+        remove(handler, params, uri);
     }
     else if(cmd[0] == "listing") {
         assert_args(cmd, 1);
-        listing(params, uri, atoi(cmd[1].c_str()));
+        listing(handler, params, uri, atoi(cmd[1].c_str()));
     }
     else if(cmd[0] == "putMoveDelete") {
         assert_args(cmd, 0);
         ASSERT(cmd.size() == 1, "Wrong number of arguments to putMoveDelete");
-        putMoveDelete(params, uri);
+        putMoveDelete(handler, params, uri);
     }
     else if(cmd[0] == "depopulate") {
         assert_args(cmd, 1);
-        depopulate(params, uri, atoi(cmd[1].c_str()));
+        depopulate(handler, params, uri, atoi(cmd[1].c_str()));
     }
     else if(cmd[0] == "countfiles") {
         assert_args(cmd, 1);
-        countfiles(params, uri, atoi(cmd[1].c_str()));
+        countfiles(handler, params, uri, atoi(cmd[1].c_str()));
     }
     else if(cmd[0] == "statdir") {
         assert_args(cmd, 0);
-        statdir(params, uri);
+        statdir(handler, params, uri);
     }
     else if(cmd[0] == "statfile") {
         assert_args(cmd, 0);
-        statfile(params, uri);
+        statfile(handler, params, uri);
     }
     else if(cmd[0] == "movefile") {
         assert_args(cmd, 0);
-        movefile(params, uri);
+        movefile(handler, params, uri);
     }
     else if(cmd[0] == "preadvec") {
         if(cmd.size() == 2) {
-            preadvec(params, uri, cmd[1], std::vector<std::string>());
+            preadvec(handler, params, uri, cmd[1], std::vector<std::string>());
         }
         else if(cmd.size() == 3) {
-            preadvec(params, uri, cmd[1], split(cmd[2], ","));
+            preadvec(handler, params, uri, cmd[1], split(cmd[2], ","));
         }
         else {
-            ASSERT(false, "Wrong number of arguments to preadvec");
+            handler.fail("Wrong number of arguments to preadvec");
         }
+    }
+    else if(cmd[0] == "preadvec-all-opts") {
+        assert_args(cmd, 1);
+        preadvec_all_opts(handler, params, uri, cmd[1]);
+    }
+    else if(cmd[0] == "preadvec-all") {
+        assert_args(cmd, 0);
+        preadvec_all(handler, params, uri);
     }
     else if(cmd[0] == "detectwebdav") {
         assert_args(cmd, 1);
@@ -552,22 +726,81 @@ void run(int argc, char** argv) {
             ASSERT(false, "Unexpected input for expected result");
         }
 
-        detectwebdav(params, uri, expected);
+        detectwebdav(handler, params, uri, expected);
+    }
+    else if(cmd[0] == "fulltest") {
+        assert_args(cmd, 0);
+
+        handler.setName(SSTR("Full-test on " << uri.getString()));
+
+        makeCollection(handler.makeChild(), params, uri);
+        populate(handler.makeChild(), params, uri, 5);
+        listing(handler.makeChild(), params, uri, 5);
+        preadvec_all(handler.makeChild(), params, uri);
+        movefile(handler.makeChild(), params, uri);
+        depopulate(handler.makeChild(), params, uri, 3);
+        countfiles(handler.makeChild(), params, uri, 2);
+        remove(handler.makeChild(), params, uri);
+    }
+    else if(cmd[0] == "fulltest-s3") {
+        assert_args(cmd, 0);
+
+        handler.setName(SSTR("Full-test S3 on " << uri.getString()));
+
+        makeCollection(handler.makeChild(), params, uri);
+        populate(handler.makeChild(), params, uri, 5);
+        listing(handler.makeChild(), params, uri, 5);
+        preadvec_all(handler.makeChild(), params, uri);
+        movefile(handler.makeChild(), params, uri);
+        depopulate(handler.makeChild(), params, uri, 3);
+        countfiles(handler.makeChild(), params, uri, 2);
+        depopulate(handler.makeChild(), params, uri, 5);
+    }
+    else if(cmd[0] == "fulltest-azure") {
+        assert_args(cmd, 0);
+
+        handler.setName(SSTR("Full-test Azure on " << uri.getString()));
+
+        populate(handler.makeChild(), params, uri, 5);
+        statdir(handler.makeChild(), params, uri);
+        listing(handler.makeChild(), params, uri, 5);
+        preadvec_all(handler.makeChild(), params, uri);
+        depopulate(handler.makeChild(), params, uri, 5);
+    }
+    else if(cmd[0] == "fulltest-swift") {
+        assert_args(cmd, 0);
+
+        handler.setName(SSTR("Full-test Swift on " << uri.getString()));
+
+        makeCollection(handler.makeChild(), params, uri);
+        populate(handler.makeChild(), params, uri, 5);
+        listing(handler.makeChild(), params, uri, 5);
+        preadvec_all(handler.makeChild(), params, uri);
+        movefile(handler.makeChild(), params, uri);
+        depopulate(handler.makeChild(), params, uri, 3);
+        countfiles(handler.makeChild(), params, uri, 2);
+        depopulate(handler.makeChild(), params, uri, 5);
     }
     else {
         ASSERT(false, "Unknown command: " << cmd[0]);
     }
+
+    return handler.ok();
 }
 
 int main(int argc, char** argv) {
+    bool success = false;
     try {
-        initialization(argc, argv);
-        run(argc, argv);
+        success = run(argc, argv);
     }
     catch(std::exception &e) {
         std::cout << e.what() << std::endl;
         return 1;
     }
 
-    return 0;
+    if(success) {
+        return 0;
+    }
+
+    return 1;
 }

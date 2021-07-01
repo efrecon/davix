@@ -127,18 +127,9 @@ dav_off_t HttpIOChain::lseek(IOChainContext & iocontext, dav_off_t offset, int f
     CHAIN_FORWARD(lseek(iocontext, offset, flags));
 }
 
-dav_ssize_t HttpIOChain::writeFromFd(IOChainContext & iocontext, int fd, dav_size_t size){
-    CHAIN_FORWARD(writeFromFd(iocontext, fd, size));
+dav_ssize_t HttpIOChain::writeFromProvider(IOChainContext & iocontext, ContentProvider &provider) {
+    CHAIN_FORWARD(writeFromProvider(iocontext, provider));
 }
-
-dav_ssize_t HttpIOChain::writeFromCb(IOChainContext &iocontext, const DataProviderFun &func, dav_size_t size){
-    CHAIN_FORWARD(writeFromCb(iocontext, func, size));
-}
-
-dav_ssize_t HttpIOChain::write(IOChainContext & iocontext, const void *buf, dav_size_t count){
-    CHAIN_FORWARD(write(iocontext, buf, count));
-}
-
 
 
 } // Davix

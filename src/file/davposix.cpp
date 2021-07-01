@@ -21,10 +21,11 @@
 
 #include <utils/davix_logger_internal.hpp>
 
+#include <core/ContentProvider.hpp>
 #include <status/davixstatusrequest.hpp>
 #include <fileops/chain_factory.hpp>
 #include <xml/davpropxmlparser.hpp>
-#include <string_utils/stringutils.hpp>
+#include <utils/stringutils.hpp>
 #include <file/davposix.hpp>
 
 using namespace StrUtil;
@@ -547,7 +548,8 @@ ssize_t DavPosix::write(DAVIX_FD* fd, const void* buf, size_t count, Davix::Davi
 
     TRY_DAVIX{
         if( davix_check_rw_fd(fd, &tmp_err) ==0){
-            ret = (ssize_t) fd->io_handler.write(fd->io_context, buf, (dav_size_t) count);
+            BufferContentProvider provider( (const char*) buf, count);
+            ret = (ssize_t) fd->io_handler.writeFromProvider(fd->io_context, provider);
         }
     }CATCH_DAVIX(&tmp_err)
 

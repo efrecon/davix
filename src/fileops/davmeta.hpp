@@ -115,6 +115,26 @@ private:
 
 };
 
+/// Handle all meta-data operations related to Swift
+class SwiftMetaOps : public HttpIOChain{
+public:
+    SwiftMetaOps();
+    virtual ~SwiftMetaOps();
+
+    // move/rename resource
+    virtual void move(IOChainContext & iocontext, const std::string & target_url);
+
+    // get statInfo
+    virtual StatInfo & statInfo(IOChainContext & iocontext, StatInfo & st_info);
+
+    // listing
+    virtual bool nextSubItem(IOChainContext &iocontext, std::string &entry_name, StatInfo &info);
+
+private:
+    std::unique_ptr<DirHandle> directoryItem;
+
+};
+
 
 /*
   retrieve a webdav propfind stat request to the given url

@@ -61,8 +61,8 @@ typedef dav_ssize_t (*HttpBodyProvider)(void *userdata,
 ///////////////////////////////////////////////////////////////////////////
 
 class NEONRequest;
-class NEONSessionFactory;
 class HttpCacheToken;
+class ContentProvider;
 
 namespace RequestFlag{
     ///
@@ -173,6 +173,11 @@ public:
     /// set a callback to provide the body of the requests
     ///
     void setRequestBody(HttpBodyProvider provider, dav_size_t len, void* udata);
+
+    ///
+    /// set a content provider object to provide the body of the requests
+    ///
+    void setRequestBody(ContentProvider &provider);
 
     ///
     /// @brief start a multi-part HTTP Request
@@ -337,10 +342,6 @@ private:
 
     void runPreRunHook();
     void runRegisterHooks();
-
-    friend class NEONRequest;
-    friend class NEONSessionFactory;
-
 };
 
 

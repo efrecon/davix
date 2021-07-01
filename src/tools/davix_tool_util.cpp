@@ -22,13 +22,13 @@
 #include <utils/davix_types.hpp>
 #include <davix.hpp>
 #include <davix_internal.hpp>
-#include <string_utils/stringutils.hpp>
+#include <utils/stringutils.hpp>
 #include "davix_tool_util.hpp"
 #include <utils/davix_logger_internal.hpp>
 #include <utils/davix_gcloud_utils.hpp>
 
 #include <ctype.h>
-#include <simple_getpass/simple_get_pass.h>
+#include "utils/simple_get_pass.h"
 
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -123,10 +123,18 @@ int configureAuth(OptParams & opts){
         opts.params.setProtocol(RequestProtocol::Gcloud);
     }
 
+    // setup swift creds
+    if(opts.os_token.empty() == false && (opts.os_project_id.empty() == false || opts.swift_account.empty() == false)) {
+        opts.params.setOSToken(opts.os_token);
+        opts.params.setOSProjectID(opts.os_project_id);
+        opts.params.setSwiftAccount(opts.swift_account);
+        opts.params.setProtocol(RequestProtocol::Swift);
+    }
+
     return 0;
 }
 
-bool startswith(const std::string &str, const std::string &prefix) {
+static bool startswith(const std::string &str, const std::string &prefix) {
   if(prefix.size() > str.size()) return false;
 
   for(size_t i = 0; i < prefix.size(); i++) {
@@ -140,6 +148,12 @@ bool checkProtocolSanity(OptParams &opts, const std::string &url, DavixError **e
     if(!opts.aws_auth.first.empty()) {
         if(!startswith(url, "s3://") && !startswith(url, "s3s://") && !startswith(url, "http://") && !startswith(url, "https://")) {
             DavixError::setupError(err, scope_params, StatusCode::InvalidArgument, fmt::format(" S3 credentials cannot be used with the protocol given in this URL : {}", url));
+            return false;
+        }
+    }
+    if(!opts.os_token.empty()) {
+        if(!startswith(url, "swift://") && !startswith(url, "swifts://") && !startswith(url, "http://") && !startswith(url, "https://")) {
+            DavixError::setupError(err, scope_params, StatusCode::InvalidArgument, fmt::format(" Swift credentials cannot be used with the protocol given in this URL : {}", url));
             return false;
         }
     }

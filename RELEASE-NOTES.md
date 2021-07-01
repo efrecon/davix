@@ -1,5 +1,44 @@
 # davix release history
 
+## 0.7.6 (2020-04-29)
+### Bug fixes
+* Ensure multi-range simulation thread exceptions are propagated
+* Fix memory leak in S3 detect region function
+* Recognize OpenSSL 'bad decrypt' error message as CredDecryptionError
+* Fix error handling for proxy delegation
+
+### Improvements
+* Add protection in case server sends an unreasonable number of stripes during TPC
+* Refactoring and improvements to davix-tester
+
+Many thanks to Petr Vokac for fixing error handling during proxy delegation.
+
+## 0.7.5 (2019-08-28)
+### Bug fixes
+* Enable use of dav:// and davs:// in third party copies.
+* Fix third party copies when the server presents multiple certificate delegation endpoints. (Thanks to Thomas Hartmann for reporting)
+* Prevent davix from infinite-looping when the server abruptly terminates the connection during TPC. (Thanks to Frank Berghaus for reporting)
+
+### Improvements
+* Add ability to cancel ongoing TPC transfers through user-supplied callback.
+* Continued refactoring to eventually allow the use of libcurl as HTTP backend in davix.
+* In-source builds are no longer supported, and explicitly prevented by CMake.
+
+## 0.7.4 (2019-07-04)
+### Bug fixes
+* Correctly handle URL-encoded paths in PROPFIND responses (Thanks to Matthew Skinner for reporting)
+* Prevent genversion.py from getting confused with non-davix git repositories (Thanks to Chris Burr)
+
+### Improvements
+* Fix cryptic cmake errors encountered sometimes when building from a tarball.
+
+## 0.7.3 (2019-05-08)
+### Bug fixes
+* Use poll instead of select during async SSL connect - fixes a crash in certain cases of overload. (Thanks to Petr Vokac)
+
+### Improvements
+* Addition of davix docker image (Thanks to Emmanuel Frecon)
+* Minor improvements to some error messages
 
 ## 0.7.2 (2019-02-15)
 ### Bug fixes

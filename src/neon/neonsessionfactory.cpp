@@ -24,10 +24,27 @@
 #include <mutex>
 #include <davix_internal.hpp>
 #include "neonsessionfactory.hpp"
+#include <backend/SessionFactory.hpp>
 
 #include <utils/davix_logger_internal.hpp>
 
+#define SSTR(message) static_cast<std::ostringstream&>(std::ostringstream().flush() << message).str()
+
 namespace Davix {
+
+NeonHandle::~NeonHandle() {
+    if(session) {
+        ne_session_destroy(session);
+        session = NULL;
+    }
+}
+
+//------------------------------------------------------------------------------
+// Check if session caching is disabled from environment variables
+//------------------------------------------------------------------------------
+static bool isSessionCachingDisabled(){
+  return ( getenv("DAVIX_DISABLE_SESSION_CACHING") != NULL);
+}
 
 static std::once_flag neon_once;
 
@@ -35,64 +52,45 @@ static void init_neon(){
     ne_sock_init();
 }
 
-static bool sessionCachingDisabled(){
-    return ( getenv("DAVIX_DISABLE_SESSION_CACHING") != NULL);
-}
-
-NEONSessionFactory::NEONSessionFactory() :
-    _sess_map(),
-    _sess_mut(),
-    _session_caching(!sessionCachingDisabled())
-{
+NEONSessionFactory::NEONSessionFactory() : _session_caching(!isSessionCachingDisabled()) {
     std::call_once(neon_once, &init_neon);
     DAVIX_SLOG(DAVIX_LOG_TRACE, DAVIX_LOG_CORE, "HTTP/SSL Session caching {}", (_session_caching?"ENABLED":"DISABLED"));
 }
 
 NEONSessionFactory::~NEONSessionFactory(){
-    std::lock_guard<std::mutex> lock(_sess_mut);
-    for(std::multimap<std::string, ne_session*>::iterator it = _sess_map.begin(); it != _sess_map.end(); ++it){
-        ne_session_destroy(it->second);
-    }
+    _session_pool.clear();
 }
 
-inline std::string davix_session_uri_rewrite(const Uri & u){
-    std::string proto = u.getProtocol();
-    if(proto.compare(0,4, "http") ==0
-            || proto.compare(0,2, "s3") == 0
-            || proto.compare(0,3, "dav") == 0
-            || proto.compare(0, 6, "gcloud") == 0){
-        proto.assign("http");
-        if(*(u.getProtocol().rbegin()) == 's')
-            proto.append("s");
-        return proto;
+//------------------------------------------------------------------------------
+// Create a NEONSession.
+//------------------------------------------------------------------------------
+std::unique_ptr<NEONSession> NEONSessionFactory::provideNEONSession(const Uri &uri, const RequestParams &params, DavixError **err) {
+    NeonHandlePtr internal_session = createNeonSession(params, uri, err);
+    if(!internal_session) {
+      return {};
     }
-    return std::string();
+
+    return std::unique_ptr<NEONSession>(new NEONSession(*this, std::move(internal_session), uri, params, err));
 }
 
-int NEONSessionFactory::createNeonSession(const RequestParams & params, const Uri & uri, ne_session** sess, DavixError **err){
+NeonHandlePtr NEONSessionFactory::createNeonSession(const RequestParams & params, const Uri & uri, DavixError **err){
     if(uri.getStatus() == StatusCode::OK){
-        if(sess != NULL){
-            std::string scheme = davix_session_uri_rewrite(uri);
-            if(scheme.size() > 0){
-                *sess = create_recycled_session(params, scheme, uri.getHost(), httpUriGetPort(uri));
-                return 0;
-            }
+        std::string scheme = SessionFactory::httpizeProtocol(uri.getProtocol());
+        if(scheme.size() > 0){
+            return create_recycled_session(params, scheme, uri.getHost(), httpUriGetPort(uri));
         }
     }
 
     DavixError::setupError(err, davix_scope_http_request(), StatusCode::UriParsingError, fmt::format("impossible to parse {}, not a valid HTTP, S3 or Webdav URL", uri.getString()));
-    return -1;
+    return NeonHandlePtr();
 }
 
-int NEONSessionFactory::storeNeonSession(ne_session* sess){
-    internal_release_session_handle(sess);
-    return 0;
+void NEONSessionFactory::storeNeonSession(NeonHandlePtr sess){
+    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_HTTP, "add old session to cache {}", sess->key.c_str());
+    _session_pool.insert(sess->key, sess);
 }
 
-
-
-
-ne_session* NEONSessionFactory::create_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port){
+NeonHandlePtr NEONSessionFactory::create_session(const RequestParams & params, const std::string & protocol, const std::string &host, unsigned int port){
     ne_session *se;
     se = ne_session_create(protocol.c_str(), host.c_str(), (int) port);
 
@@ -114,55 +112,42 @@ ne_session* NEONSessionFactory::create_session(const RequestParams & params, con
         }
 
     }
+
     //ne_ssl_trust_default_ca(se); not stable in neon on epel 5
-    return se;
+    return NeonHandlePtr(new NeonHandle(create_map_keys_from_URL(protocol, host, port), se));
 }
 
-ne_session* NEONSessionFactory::create_recycled_session(const RequestParams & params, const std::string &protocol, const std::string &host, unsigned int port){
+NeonHandlePtr NEONSessionFactory::create_recycled_session(const RequestParams & params, const std::string &protocol, const std::string &host, unsigned int port){
 
     if(params.getKeepAlive()){
-        ne_session* se= NULL;
-        std::lock_guard<std::mutex> lock(_sess_mut);
-        std::multimap<std::string, ne_session*>::iterator it;
-        if( (it = _sess_map.find(create_map_keys_from_URL(protocol, host, port))) != _sess_map.end()){
+        NeonHandlePtr out;
+        if(_session_pool.retrieve(create_map_keys_from_URL(protocol, host, port), out)) {
             DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_HTTP, "cached ne_session found ! taken from cache ");
-            se = it->second;
-            _sess_map.erase(it);
-            return se;
+            return out;
         }
-
     }
     DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_HTTP, "no cached ne_session, create a new one ");
     return create_session(params, protocol, host, port);
 }
 
-void NEONSessionFactory::setSessionCaching(bool caching){
-    _session_caching = caching && !sessionCachingDisabled();
-}
-
-void NEONSessionFactory::internal_release_session_handle(ne_session* sess){
-    // clear sensitive data
-    // none
-    //
-    std::lock_guard<std::mutex> lock(_sess_mut);
-    std::multimap<std::string, ne_session*>::iterator it;
-    std::string sess_key;
-    sess_key.append(ne_get_scheme(sess)).append(ne_get_server_hostport(sess));
-
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_HTTP, "add old session to cache {}", sess_key.c_str());
-
-    _sess_map.insert(std::pair<std::string, ne_session*>(sess_key, sess));
-}
-
 std::string create_map_keys_from_URL(const std::string & protocol, const std::string &host, unsigned int port){
-    std::string host_port;
-    if( (strcmp(protocol.c_str(), "http") ==0 && port == 80)
-            || ( strcmp(protocol.c_str(), "https") ==0 && port == 443)){
-        host_port = fmt::format("{}{}", protocol, host);
-    }else
-        host_port = fmt::format("{}{}:{}", protocol, host, port);
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_HTTP, " creating session keys... {}", host_port);
-    return host_port;
+    return SSTR(protocol << host << ":" << port);
+}
+
+//------------------------------------------------------------------------------
+// Set caching on or off
+//------------------------------------------------------------------------------
+void NEONSessionFactory::setSessionCaching(bool caching) {
+  std::lock_guard<std::mutex> lock(_session_caching_mtx);
+  _session_caching = caching && !isSessionCachingDisabled();
+}
+
+//------------------------------------------------------------------------------
+// Get caching status
+//------------------------------------------------------------------------------
+bool NEONSessionFactory::getSessionCaching() const {
+  std::lock_guard<std::mutex> lock(_session_caching_mtx);
+  return _session_caching;
 }
 
 } // namespace Davix

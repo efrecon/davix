@@ -39,8 +39,12 @@ IF (ENABLE_THIRD_PARTY_COPY)
                         DEPENDS env.h)
 
     # Includes
-    INCLUDE_DIRECTORIES (${CMAKE_CURRENT_BINARY_DIR}
-                         ${GSOAP_INCLUDE_DIR})
+    INCLUDE_DIRECTORIES (
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_BINARY_DIR}/src
+        ${CMAKE_CURRENT_BINARY_DIR}
+        ${GSOAP_INCLUDE_DIR}
+    )
 
     # link
     LINK_DIRECTORIES( ${DAVIX_PKG_LIBRARY_DIRS})

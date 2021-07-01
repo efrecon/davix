@@ -22,10 +22,10 @@
 #include <davix_internal_config.hpp>
 #include "iobuffmap.hpp"
 
+#include <core/ContentProvider.hpp>
 #include <utils/davix_types.hpp>
 #include <request/httprequest.hpp>
 #include <utils/davix_logger_internal.hpp>
-#include <http_util/http_util.hpp>
 #include <fileops/httpiovec.hpp>
 #include <fileops/davmeta.hpp>
 #include <system_utils/env_utils.hpp>
@@ -166,7 +166,7 @@ dav_ssize_t HttpIO::readFull(IOChainContext & iocontext, std::vector<char> & buf
     }
 
     checkDavixError(&tmp_err);
-    return (ret>0)?total:-1;
+    return (ret>=0)?total:-1;
 }
 
 
@@ -252,22 +252,15 @@ dav_ssize_t HttpIO::readToFd(IOChainContext & iocontext, int fd, dav_size_t read
     return ret;
 }
 
-static dav_ssize_t body_provider_wrapper(void *userdata,
-                                       char *buffer, dav_size_t buflen){
-
-        DataProviderFun* cb = (DataProviderFun*) userdata;
-        return (*cb)(buffer, buflen);
-}
-
-dav_ssize_t HttpIO::writeFromCb(IOChainContext &iocontext, const DataProviderFun & func, dav_size_t size){
+dav_ssize_t HttpIO::writeFromProvider(IOChainContext & iocontext, ContentProvider &provider) {
     DavixError * tmp_err=NULL;
 
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write size {}", size);
+    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write size {}", provider.getSize());
     PutRequest req (iocontext._context,iocontext._uri, &tmp_err);
     if(!tmp_err){
         RequestParams params(iocontext._reqparams);
         req.setParameters(params);
-        req.setRequestBody(&body_provider_wrapper, size, (void*) &func);
+        req.setRequestBody(provider);
         req.executeRequest(&tmp_err);
         if(!tmp_err && httpcodeIsValid(req.getRequestCode()) == false){
             httpcodeToDavixError(req.getRequestCode(), davix_scope_io_buff(),
@@ -275,35 +268,10 @@ dav_ssize_t HttpIO::writeFromCb(IOChainContext &iocontext, const DataProviderFun
         }
     }
 
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write result size {}", size);
+    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write result size {}", provider.getSize());
     checkDavixError(&tmp_err);
-    return size;
+    return provider.getSize();
 }
-
-
-// position independant write operation,
-// similar to pwrite do not need open() before
-dav_ssize_t HttpIO::writeFromFd(IOChainContext & iocontext, int fd, dav_size_t size){
-    DavixError * tmp_err=NULL;
-
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write size {}", size);
-    PutRequest req (iocontext._context,iocontext._uri, &tmp_err);
-    if(!tmp_err){
-        RequestParams params(iocontext._reqparams);
-        req.setParameters(params);
-        req.setRequestBody(fd, 0, size);
-        req.executeRequest(&tmp_err);
-        if(!tmp_err && httpcodeIsValid(req.getRequestCode()) == false){
-            httpcodeToDavixError(req.getRequestCode(), davix_scope_io_buff(),
-                                "write error: ", &tmp_err);
-        }
-    }
-
-    DAVIX_SLOG(DAVIX_LOG_DEBUG, DAVIX_LOG_CHAIN, "write result size {}", size);
-    checkDavixError(&tmp_err);
-    return size;
-}
-
 
 
 /////////////////////////////////////////////////////
@@ -490,7 +458,9 @@ void HttpIOBuffer::commitLocal(IOChainContext & iocontext){
         memset(&st,0, sizeof(struct stat));
         fstat(_local->_fd, &st);
         DAVIX_SLOG(DAVIX_LOG_TRACE, DAVIX_LOG_CHAIN, "Commit local file modifications, {} bytes", st.st_size);
-        _start->writeFromFd(iocontext, _local->_fd, st.st_size);
+
+        FdContentProvider provider(_local->_fd, 0, st.st_size);
+        _start->writeFromProvider(iocontext, provider);
         _local.reset();
     }
 }
@@ -514,39 +484,5 @@ dav_off_t HttpIOBuffer::lseek(IOChainContext & iocontext, dav_off_t offset, int 
     }
     return _pos;
 }
-
-dav_ssize_t HttpIOBuffer::write(IOChainContext & iocontext, const void *buf, dav_size_t count){
-    (void) iocontext;
-    std::lock_guard<std::recursive_mutex> l(_rwlock);
-    dav_ssize_t ret =-1;
-    dav_size_t write_len = count;
-
-    if(!_opened) {
-        throw DavixException(davix_scope_io_buff(), StatusCode::SystemError, "Impossible to write, descriptor has not been opened");
-    }
-
-    if(_local.get() == NULL) {
-        throw DavixException(davix_scope_io_buff(), StatusCode::SystemError, "Impossible to write, no buffer. (file was opened only for reading?)");
-    }
-
-    do{
-        ret = pwrite(_local->_fd, buf, static_cast<size_t>(count), _pos);
-
-        if (ret == -1 && errno == EINTR) {
-            continue;
-        } else if (ret < 0) {
-            throw DavixException(davix_scope_io_buff(),
-                                   StatusCode::SystemError, std::string("Impossible to write to fd").append(strerror(errno)));
-        } else {
-            _pos += ret;
-            write_len -= ret;
-        }
-    }while(write_len >0);
-
-    return (count - write_len);
-}
-
-
-
 
 } // namespace Davix

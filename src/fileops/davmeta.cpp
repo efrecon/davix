@@ -27,18 +27,20 @@
 #include <xml/metalinkparser.hpp>
 #include <xml/s3propparser.hpp>
 #include <xml/azurepropparser.hpp>
+#include <xml/swiftpropparser.hpp>
 
 #include <utils/davix_logger_internal.hpp>
 #include <utils/davix_utils_internal.hpp>
 #include <utils/davix_s3_utils.hpp>
 #include <utils/davix_azure_utils.hpp>
 #include <utils/davix_gcloud_utils.hpp>
+#include <utils/davix_swift_utils.hpp>
 #include <utils/checksum_extractor.hpp>
 
 #include <request/httprequest.hpp>
 #include <fileops/fileutils.hpp>
-#include <string_utils/stringutils.hpp>
-#include <alibxx/crypto/base64.hpp>
+#include <utils/stringutils.hpp>
+#include "libs/alibxx/crypto/base64.hpp"
 #include <neon/neonrequest.hpp>
 
 
@@ -556,6 +558,232 @@ bool HttpMetaOps::nextSubItem(IOChainContext &iocontext, std::string &entry_name
 /////////////////////////
 /////////////////////////
 
+SwiftMetaOps::SwiftMetaOps() : HttpIOChain()
+{}
+
+SwiftMetaOps::~SwiftMetaOps(){}
+
+static bool is_swift_operation(IOChainContext & context){
+    return context._reqparams->getProtocol() == RequestProtocol::Swift;
+}
+
+static void swiftStatMapper(Context& context, const RequestParams* params, const Uri & uri, struct StatInfo& st_info) {
+    const std::string scope = "Davix::swiftStatMapper";
+    DavixError * tmp_err=NULL;
+    HeadRequest req(context, uri, &tmp_err);
+
+    // we need to modify it, hence copy
+    RequestParams p(params);
+
+    if(tmp_err == NULL) {
+        req.setParameters(p);
+        req.executeRequest(&tmp_err);
+        const int code = req.getRequestCode();
+
+        if(code == 404) {
+            DavixError::clearError(&tmp_err);
+            // try to "list" target resource and see if there is anything inside it, if there is, then it's a directory
+            Uri new_url = Swift::swiftUriTransformer(uri, p, true);
+
+            GetRequest http_req(context, new_url, &tmp_err);
+
+            http_req.setParameters(p);
+
+            http_req.beginRequest(&tmp_err);
+            checkDavixError(&tmp_err);
+
+            check_file_status(http_req, scope);
+
+            // check response text, if there is data, then it is a directory, otherwise not a directory or file
+            char buffer[256+1];
+            const dav_ssize_t ret = http_req.readSegment(buffer, 256, &tmp_err);
+            checkDavixError(&tmp_err);
+            if(ret == 0){
+                throw DavixException(scope, StatusCode::FileNotFound, "Not a file or directory");
+            }
+            else if (ret < 0) {
+                throw DavixException(scope, StatusCode::UnknowError, "Unknown readSegment error");
+            }
+            checkDavixError(&tmp_err);
+
+            st_info.mode = 0755;
+            st_info.mode |= S_IFDIR;
+        }
+        else if(code == 200){
+            st_info.mode = 0755;
+
+            std::string swift_path = Swift::extract_swift_path(uri);
+            if(swift_path == "/") // is container
+                st_info.mode |= S_IFDIR;
+            else if(swift_path[swift_path.size()-1] == '/' && req.getAnswerSize() == 0) { // is a directory
+                st_info.mode |= S_IFDIR;
+            }
+            else {   // is file
+                st_info.mode |= S_IFREG;
+                const dav_ssize_t s = req.getAnswerSize();
+                st_info.size = std::max<dav_ssize_t>(0, s);
+                st_info.mtime = req.getLastModified();
+            }
+        }
+        else if(code == 204){ // Normal response of a HEAD request to a container is 204
+            st_info.mode = 0755;
+
+            std::string swift_path = Swift::extract_swift_path(uri);
+            if(swift_path == "/") // is container
+                st_info.mode |= S_IFDIR;
+        }
+        else if(code == 500){
+            throw DavixException(scope, StatusCode::UnknowError, "Internal Server Error triggered while attempting to get Swift object's stats");
+        }
+    }
+    checkDavixError(&tmp_err);
+}
+
+StatInfo & SwiftMetaOps::statInfo(IOChainContext &iocontext, StatInfo &st_info) {
+    if(is_swift_operation(iocontext)){
+        swiftStatMapper(iocontext._context, iocontext._reqparams, iocontext._uri, st_info);
+        return st_info;
+    }
+    else{
+        StatInfo & ref = HttpIOChain::statInfo(iocontext, st_info);
+        return ref;
+    }
+}
+
+bool is_a_container(Uri u) {
+    std::string tmp = Swift::extract_swift_path(u);
+    if(tmp.compare("/") == 0){
+        return true;
+    }
+    return false;
+}
+
+bool s3_get_next_property(std::unique_ptr<DirHandle> & handle, std::string & name_entry, StatInfo & info);
+
+void swift_start_listing_query(std::unique_ptr<DirHandle> & handle, Context & context, const RequestParams* params, const Uri & url, const std::string & body){
+    (void) body;
+    dav_ssize_t s_resu;
+    DavixError* tmp_err=NULL;
+
+    if(params->getSwiftListingMode() == SwiftListingMode::Hierarchical){
+        Uri new_url = Swift::swiftUriTransformer(url, params, true);
+        handle.reset(new DirHandle(new GetRequest(context, new_url, &tmp_err), new SwiftPropParser(Swift::extract_swift_path(url))));
+    }
+    else if(params->getSwiftListingMode() == SwiftListingMode::SemiHierarchical){
+        Uri new_url = Swift::swiftUriTransformer(url, params, false);
+        handle.reset(new DirHandle(new GetRequest(context, new_url, &tmp_err), new SwiftPropParser(Swift::extract_swift_path(url))));
+    }
+    else{
+        if(is_a_container(url) == false){
+            throw DavixException(davix_scope_directory_listing_str(), StatusCode::IsNotADirectory, "This is not a Swift container");
+        }
+        handle.reset(new DirHandle(new GetRequest(context, url, &tmp_err), new SwiftPropParser()));
+    }
+    checkDavixError(&tmp_err);
+
+
+    const int operation_timeout = params->getOperationTimeout()->tv_sec;
+    HttpRequest & http_req = *(handle->request);
+    XMLPropParser & parser = *(handle->parser);
+
+    time_t timestamp_timeout = time(NULL) + ((operation_timeout)?(operation_timeout):180);
+
+    http_req.setParameters(params);
+    http_req.addHeaderField("Accept", "application/xml");
+
+    http_req.beginRequest(&tmp_err);
+    checkDavixError(&tmp_err);
+
+    check_file_status(http_req, davix_scope_directory_listing_str());
+
+    size_t prop_size = 0;
+    do{ // first entry -> container information
+        s_resu = incremental_listdir_parsing(&http_req, &parser, 2048, davix_scope_directory_listing_str());
+
+        prop_size = parser.getProperties().size();
+        if(s_resu < 2048 && prop_size <1){ // verify request status : if req done + no data -> error
+            throw DavixException(davix_scope_directory_listing_str(), StatusCode::ParsingError, "Invalid server response, not a Swift listing or the directory is empty");
+        }
+        if(timestamp_timeout < time(NULL)){
+            throw DavixException(davix_scope_directory_listing_str(), StatusCode::OperationTimeout, "Operation timeout triggered while directory listing");
+        }
+
+    }while( prop_size < 1); // prop < 1 means not enough data
+
+}
+
+bool swift_directory_listing(std::unique_ptr<DirHandle> & handle, Context & context, const RequestParams* params, const Uri & uri, const std::string & body, std::string & name_entry, StatInfo & info){
+    if(handle.get() == NULL){
+        swift_start_listing_query(handle, context, params, uri, body);
+    }
+    return s3_get_next_property(handle, name_entry, info);
+}
+
+
+bool SwiftMetaOps::nextSubItem(IOChainContext &iocontext, std::string &entry_name, StatInfo &info){
+    if(is_swift_operation(iocontext)){
+        return swift_directory_listing(directoryItem, iocontext._context, iocontext._reqparams, iocontext._uri, stat_listing,
+                                    entry_name, info);
+    }else{
+        return HttpIOChain::nextSubItem(iocontext, entry_name, info);
+    }
+
+}
+
+void SwiftMetaOps::move(IOChainContext & iocontext, const std::string & target_url) {
+    const std::string scope = "Davix::SwiftMetaOps::move";
+    if(!is_swift_operation(iocontext)) {
+        return HttpIOChain::move(iocontext, target_url);
+    }
+
+    Context context = iocontext._context;
+    RequestParams params = iocontext._reqparams;
+    Uri uri(iocontext._uri);
+    Uri target(target_url);
+
+    // verify both are using the same swift provider/server, reuse s3 utils
+    std::string p1 = S3::extract_s3_provider(uri);
+    std::string p2 = S3::extract_s3_provider(target);
+
+    if(p1 != p2) {
+        throw DavixException(scope, StatusCode::OperationNonSupported,
+                             "It looks that the two URLs are not using the same Swift provider. Unable to perform the move operation.");
+    }
+
+    std::string source_container = Swift::extract_swift_container(uri);
+    std::string source_path = Swift::extract_swift_path(uri);
+
+    DavixError *tmp_err = NULL;
+    PutRequest req(context, target, &tmp_err);
+    checkDavixError(&tmp_err);
+    req.setParameters(iocontext._reqparams);
+    req.addHeaderField("X-Copy-From", "/" + source_container + source_path);
+
+    req.executeRequest(&tmp_err);
+    checkDavixError(&tmp_err);
+
+    // if copying was successful, delete the source file
+    if(req.getRequestCode() == 201) {
+
+        DeleteRequest req(context, uri, &tmp_err);
+        checkDavixError(&tmp_err);
+
+        RequestParams p(iocontext._reqparams);
+        req.setParameters(p);
+
+        req.executeRequest(&tmp_err);
+        checkDavixError(&tmp_err);
+    }
+    else {
+        std::stringstream str;
+        str << "Received code " << req.getRequestCode() << " when trying to copy file - will not perform deletion";
+        throw DavixException(scope, StatusCode::UnknowError, str.str());
+    }
+}
+
+/////////////////////////
+/////////////////////////
+
 
 bool is_a_bucket(const Uri & u){
     const std::string & s = u.getPath();
@@ -663,7 +891,7 @@ void S3MetaOps::checksum(IOChainContext &iocontext, std::string &checksm, const 
 }
 
 void S3MetaOps::makeCollection(IOChainContext &iocontext){
-    if(is_s3_operation(iocontext)){
+    if(is_s3_operation(iocontext) || is_swift_operation(iocontext)){
         internal_s3_create_bucket_or_dir( iocontext._context, iocontext._uri, iocontext._reqparams);
     }else{
         HttpIOChain::makeCollection(iocontext);
@@ -1058,5 +1286,6 @@ bool AzureMetaOps::nextSubItem(IOChainContext &iocontext, std::string &entry_nam
         return HttpIOChain::nextSubItem(iocontext, entry_name, info);
     }
 }
+
 
 } // Davix

@@ -1,10 +1,13 @@
 #include <davix.hpp>
-#include <string_utils/stringutils.hpp>
+#include <utils/stringutils.hpp>
 #include <tools/davix_tool_util.hpp>
-#include <alibxx/crypto/base64.hpp>
-#include <alibxx/crypto/hmacsha.hpp>
+#include "libs/alibxx/crypto/base64.hpp"
+#include "libs/alibxx/crypto/hmacsha.hpp"
 #include <utils/davix_s3_utils.hpp>
+#include <utils/davix_swift_utils.hpp>
 #include <gtest/gtest.h>
+#include <core/SessionPool.hpp>
+#include <curl/HeaderlineParser.hpp>
 
 using namespace std;
 using namespace Davix;
@@ -192,8 +195,83 @@ TEST(testAuthS3, ReqToTokenWithHeaders){
     ASSERT_TRUE(StrUtil::compare_ncase(resu.getString(), u.getString()) ==0);
 }
 
+TEST(testAuthSwift, signUri){
+    RequestParams params;
+    Uri url("https://hostname.com/containersth2873/objectfile1234");
+    params.setOSProjectID("21e698ff1238438fabc72e5cf9d59165");
+
+    Uri u = Swift::signURI(params, url);
+    ASSERT_EQ(u.getString(), "https://hostname.com/v1/AUTH_21e698ff1238438fabc72e5cf9d59165/containersth2873/objectfile1234");
+}
+
 TEST(CanonicalizedResourceQueryParams, BasicSanity) {
     //Uri url(
 
 }
 
+TEST(SessionPool, BasicSanity) {
+    SessionPool<int> pool;
+
+    int out;
+
+    pool.insert("test-1", 3);
+    ASSERT_FALSE(pool.retrieve("test", out));
+
+    ASSERT_TRUE(pool.retrieve("test-1", out));
+    ASSERT_EQ(out, 3);
+
+    ASSERT_FALSE(pool.retrieve("test-1", out));
+
+
+    pool.insert("test-2", 3);
+    pool.insert("test-2", 4);
+    pool.insert("test-2", 3);
+    pool.insert("test-2", 5);
+
+    ASSERT_TRUE(pool.retrieve("test-2", out));
+    ASSERT_EQ(out, 3);
+
+    ASSERT_TRUE(pool.retrieve("test-2", out));
+    ASSERT_EQ(out, 4);
+
+    ASSERT_TRUE(pool.retrieve("test-2", out));
+    ASSERT_EQ(out, 3);
+
+    ASSERT_TRUE(pool.retrieve("test-2", out));
+    ASSERT_EQ(out, 5);
+}
+
+TEST(HeaderlineParser, BasicSanity) {
+    HeaderlineParser parser("");
+    ASSERT_EQ(parser.getKey(), "");
+    ASSERT_EQ(parser.getValue(), "");
+
+    std::string buff("12345");
+    parser = HeaderlineParser(buff.c_str(), buff.size()+1);
+    ASSERT_EQ(parser.getKey(), "12345");
+    ASSERT_EQ(parser.getValue(), "");
+
+    parser = HeaderlineParser("test");
+    ASSERT_EQ(parser.getKey(), "test");
+    ASSERT_EQ(parser.getValue(), "");
+
+    parser = HeaderlineParser("aaa: bbb");
+    ASSERT_EQ(parser.getKey(), "aaa");
+    ASSERT_EQ(parser.getValue(), "bbb");
+
+    parser = HeaderlineParser("aaa:bbb");
+    ASSERT_EQ(parser.getKey(), "aaa");
+    ASSERT_EQ(parser.getValue(), "bbb");
+
+    parser = HeaderlineParser("aaa:                             bbb");
+    ASSERT_EQ(parser.getKey(), "aaa");
+    ASSERT_EQ(parser.getValue(), "bbb");
+
+    parser = HeaderlineParser("aaa: bbb\r\n");
+    ASSERT_EQ(parser.getKey(), "aaa");
+    ASSERT_EQ(parser.getValue(), "bbb");
+
+    parser = HeaderlineParser("aaa:                             bbb\r\n");
+    ASSERT_EQ(parser.getKey(), "aaa");
+    ASSERT_EQ(parser.getValue(), "bbb");
+}

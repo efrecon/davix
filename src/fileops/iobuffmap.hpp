@@ -56,11 +56,7 @@ public:
     // read to fd
     virtual dav_ssize_t readToFd(IOChainContext & iocontext, int fd, dav_size_t size);
 
-    virtual dav_ssize_t writeFromCb(IOChainContext &iocontext, const DataProviderFun &func, dav_size_t size);
-
-    // position independant write operation,
-    // similar to pwrite do not need open() before
-    virtual dav_ssize_t writeFromFd(IOChainContext & iocontext, int fd, dav_size_t size);
+    virtual dav_ssize_t writeFromProvider(IOChainContext & iocontext, ContentProvider &provider);
 
 private:
 
@@ -91,9 +87,6 @@ public:
 
     // give information on the future operation for prefecting
     virtual void prefetchInfo(IOChainContext & iocontext, off_t offset, dav_size_t size_read, advise_t adv);
-
-    //
-    virtual dav_ssize_t write(IOChainContext & iocontext, const void* buf, dav_size_t count);
 
     //
     virtual dav_off_t lseek(IOChainContext & iocontext, dav_off_t offset, int flags);

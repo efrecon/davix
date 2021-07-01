@@ -43,6 +43,9 @@ const int default_retry_number= 3;
 // tr1
 #cmakedefine HAVE_TR1_SUPPORT 1
 
+// curl as default
+#cmakedefine LIBCURL_BACKEND_BY_DEFAULT
+
 // default export
 #undef DAVIX_EXPORT
 #define DAVIX_EXPORT
@@ -52,7 +55,6 @@ const int default_retry_number= 3;
 // has unistd
 #cmakedefine HAVE_UNISTD_H 1
 // has clock_gettime
-#cmakedefine HAVE_CLOCK_GETTIME 1
 #cmakedefine HAVE_GETTIMEOFDAY 1
 
 // openssl backend

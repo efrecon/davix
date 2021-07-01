@@ -196,12 +196,53 @@ public:
     ///
     const Davix::gcloud::Credentials & getGcloudCredentials() const;
 
+    ///
+    /// \brief set the OS token used for Swift authentication
+    /// \param token the OS token
+    ///
+    void setOSToken(const OSToken & token);
+
+    ///
+    /// \brief get the OS token used for Swift authentication
+    /// \return the OS token
+    ///
+    const OSToken & getOSToken() const;
+
+    ///
+    /// \brief set the OS project id used for Swift authentication
+    /// \param the project id
+    ///
+    void setOSProjectID(const OSProjectID & id);
+
+    ///
+    /// \brief get the OS project id used for Swift authentication
+    /// \return the project id
+    ///
+    const OSProjectID & getOSProjectID() const;
+
+    ///
+    /// \brief set the Swift account used for Swift authentication
+    /// \param the Swift account
+    ///
+    void setSwiftAccount(const SwiftAccount & account);
+
+    ///
+    /// \brief get the Swift account used for Swift authentication
+    /// \return the Swift account
+    ///
+    const SwiftAccount & getSwiftAccount() const;
 
     /// set listing mode flag for S3 bucket
     void setS3ListingMode(const S3ListingMode::S3ListingMode s3_listing_mode);
 
     /// get listing mode flag for S3 bucket
     S3ListingMode::S3ListingMode getS3ListingMode() const;
+
+    /// set listing mode flag for Swift
+    void setSwiftListingMode(const SwiftListingMode::SwiftListingMode swift_listing_mode);
+
+    /// get listing mode flag for Swift
+    SwiftListingMode::SwiftListingMode getSwiftListingMode() const;
 
     /// set maximum number of key entries return by S3 list object request
     void setS3MaxKey(const unsigned long s3_max_key_entries);
